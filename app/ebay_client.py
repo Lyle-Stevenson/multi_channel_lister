@@ -74,7 +74,8 @@ class EbayClient:
     _cached_token: EbayToken | None = None
 
     async def _get_user_access_token(self) -> str:
-        if self._cached_token and self._cached_token.expires_at > datetime.now(timezone.utc) + timedelta(minutes=2):
+        now = datetime.now(timezone.utc)
+        if self._cached_token and self._cached_token.expires_at > now + timedelta(minutes=2):
             return self._cached_token.access_token
 
         url = f"{EBAY_API_BASE}/identity/v1/oauth2/token"
@@ -102,14 +103,19 @@ class EbayClient:
             payload = r.json()
             access_token = payload["access_token"]
             expires_in = int(payload.get("expires_in", 7200))
-            expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+            expires_at = now + timedelta(seconds=expires_in)
 
             self._cached_token = EbayToken(access_token=access_token, expires_at=expires_at)
             return access_token
 
-    async def _headers(self, *, content_type: str | None = None, content_language: str | None = None) -> dict[str, str]:
+    async def _headers(
+        self,
+        *,
+        content_type: str | None = None,
+        content_language: str | None = None,
+    ) -> dict[str, str]:
         token = await self._get_user_access_token()
-        headers = {"Authorization": f"Bearer {token}"}
+        headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
         if content_type:
             headers["Content-Type"] = content_type
         if content_language:
@@ -185,6 +191,25 @@ class EbayClient:
                 raise RuntimeError(f"eBay offer replace failed: HTTP {r.status_code}: {r.text}")
         return offer_id
 
+    async def get_offer(self, offer_id: str) -> dict[str, Any]:
+        """
+        Truth source for availableQuantity.
+        """
+        url = f"{EBAY_API_BASE}/sell/inventory/v1/offer/{offer_id}"
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.get(url, headers=await self._headers(content_language="en-GB"))
+            if r.status_code >= 400:
+                raise RuntimeError(f"eBay get offer failed: HTTP {r.status_code}: {r.text}")
+            return r.json()
+
+    async def get_inventory_item(self, sku: str) -> dict[str, Any]:
+        url = f"{EBAY_API_BASE}/sell/inventory/v1/inventory_item/{sku}"
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.get(url, headers=await self._headers(content_language="en-GB"))
+            if r.status_code >= 400:
+                raise RuntimeError(f"eBay get inventory item failed: HTTP {r.status_code}: {r.text}")
+            return r.json()
+
     async def create_or_replace_offer(
         self,
         *,
@@ -250,18 +275,6 @@ class EbayClient:
             data = r.json()
             listing_id = data.get("listingId") or data.get("listing_id")
             return str(listing_id) if listing_id else ""
-
-    # ---------- NEW: read offer (truth for availableQuantity) ----------
-
-    async def get_offer(self, offer_id: str) -> dict[str, Any]:
-        url = f"{EBAY_API_BASE}/sell/inventory/v1/offer/{offer_id}"
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.get(url, headers=await self._headers(content_type="application/json"))
-            if r.status_code >= 400:
-                raise RuntimeError(f"eBay get offer failed: HTTP {r.status_code}: {r.text}")
-            return r.json()
-
-    # ---------- Quantity-only update (used by Square webhook) ----------
 
     async def bulk_update_price_quantity(
         self,

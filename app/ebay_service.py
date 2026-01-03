@@ -6,6 +6,15 @@ from typing import Any
 from app.ebay_client import EbayClient
 
 
+def _to_int(x: object, default: int = 0) -> int:
+    try:
+        if x is None:
+            return default
+        return int(x)  # handles strings like "2"
+    except Exception:
+        return default
+
+
 class EbayService:
     def __init__(
         self,
@@ -49,7 +58,7 @@ class EbayService:
             description=description,
             image_urls=eps_urls,
             condition=condition,
-            quantity=quantity,
+            quantity=int(quantity),
             item_specifics=item_specifics,
         )
 
@@ -61,7 +70,7 @@ class EbayService:
             category_id=category_id,
             listing_description=description,
             price_gbp=price_gbp,
-            quantity=quantity,
+            quantity=int(quantity),
             fulfillment_policy_id=self.fulfillment_policy_id,
             payment_policy_id=self.payment_policy_id,
             return_policy_id=self.return_policy_id,
@@ -87,5 +96,8 @@ class EbayService:
         )
 
     async def get_offer_available_quantity(self, offer_id: str) -> int:
+        """
+        Authoritative read for availableQuantity.
+        """
         data = await self.client.get_offer(str(offer_id))
-        return int(data.get("availableQuantity") or 0)
+        return _to_int(data.get("availableQuantity"), default=0)
