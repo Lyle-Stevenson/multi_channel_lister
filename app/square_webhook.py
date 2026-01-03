@@ -27,13 +27,18 @@ def verify_square_signature(*, raw_body: bytes, signature: str | None) -> bool:
     """
     if not signature:
         return False
-    if not settings.square_webhook_signature_key or not settings.square_webhook_notification_url:
+
+    key = (settings.square_webhook_signature_key or "").strip()
+    url = (settings.square_webhook_notification_url or "").strip()
+    sig = signature.strip()
+
+    if not key or not url:
         return False
 
-    message = (settings.square_webhook_notification_url + raw_body.decode("utf-8")).encode("utf-8")
-    digest = hmac.new(settings.square_webhook_signature_key.encode("utf-8"), message, hashlib.sha256).digest()
+    message = (url + raw_body.decode("utf-8")).encode("utf-8")
+    digest = hmac.new(key.encode("utf-8"), message, hashlib.sha256).digest()
     expected = base64.b64encode(digest).decode("utf-8")
-    return hmac.compare_digest(expected, signature)
+    return hmac.compare_digest(expected, sig)
 
 
 def _safe_get(d: dict[str, Any], *keys: str) -> Any:
@@ -59,7 +64,7 @@ def extract_payment_order_id_and_status(payload: dict[str, Any]) -> tuple[str | 
 
 def extract_inventory_change(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    Try to normalize Square inventory change event payloads.
+    Normalize Square inventory change event payloads.
 
     Returns a list of changes like:
       [{"catalog_object_id": "VARIATION_ID", "quantity": 12, "state": "IN_STOCK"}]
@@ -78,9 +83,7 @@ def extract_inventory_change(payload: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(c, dict):
                 continue
             cat_id = c.get("catalog_object_id") or c.get("catalogObjectId")
-            qty_raw = c.get("quantity") or c.get("calculated_at")  # fallback not great; keep defensive
             state = c.get("state") or ""
-            # quantity is usually a string number like "3"
             try:
                 qty = int(float(c.get("quantity") or "0"))
             except Exception:
@@ -159,6 +162,11 @@ async def _ebay_get_access_token() -> str:
 
 
 async def _ebay_bulk_update_quantity(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Uses eBay bulk_update_price_quantity.
+
+    items: [{"sku": "TEST-001", "offer_id": "123", "qty": 2}, ...]
+    """
     if not items:
         return {"responses": []}
 
@@ -171,14 +179,16 @@ async def _ebay_bulk_update_quantity(items: list[dict[str, Any]]) -> dict[str, A
         "Content-Language": "en-GB",
     }
 
+    # Correct schema: requests[].offers[] and include inventory item quantity too. 
     payload = {
         "requests": [
             {
-                "sku": it["sku"],
+                "sku": str(it["sku"]),
                 "shipToLocationAvailability": {"quantity": int(it["qty"])},
-                "offers": [{"offerId": it["offer_id"], "availableQuantity": int(it["qty"])}],
+                "offers": [{"offerId": str(it["offer_id"]), "availableQuantity": int(it["qty"])}],
             }
             for it in items
+            if it.get("sku") and it.get("offer_id") is not None
         ]
     }
 
@@ -190,14 +200,17 @@ async def _ebay_bulk_update_quantity(items: list[dict[str, Any]]) -> dict[str, A
 
 
 def _sync_all_ebay_offers_from_db(*, db: Session) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+    """
+    Build a full "sync everything" list from DB. Useful if a prior webhook applied inventory but didn't sync eBay.
+    """
+    items: list[dict[str, Any]] = []
     for pm in db.execute(select(ProductMap)).scalars().all():
         if not pm.ebay_offer_id:
             continue
         inv = db.get(Inventory, pm.sku)
         qty = int(inv.on_hand) if inv else 0
-        rows.append({"sku": pm.sku, "offer_id": str(pm.ebay_offer_id), "qty": qty})
-    return rows
+        items.append({"sku": pm.sku, "offer_id": str(pm.ebay_offer_id), "qty": qty})
+    return items
 
 
 async def apply_square_order_and_sync_ebay(
@@ -213,10 +226,11 @@ async def apply_square_order_and_sync_ebay(
         db.add(event)
         db.commit()
 
+    # Idempotency: if inventory already applied, only retry eBay sync if needed
     if event.applied_inventory:
         if not event.ebay_synced:
-            offer_map = _sync_all_ebay_offers_from_db(db=db)
-            await _ebay_bulk_update_quantity(offer_map)
+            items = _sync_all_ebay_offers_from_db(db=db)
+            await _ebay_bulk_update_quantity(items)
             event.ebay_synced = True
             db.commit()
         return {"event_id": event_id, "order_id": order_id, "applied_inventory": True, "ebay_synced": event.ebay_synced}
@@ -227,6 +241,8 @@ async def apply_square_order_and_sync_ebay(
 
     sold_by_variation: dict[str, int] = defaultdict(int)
     for li in line_items:
+        if not isinstance(li, dict):
+            continue
         var_id = li.get("catalog_object_id") or ""
         qty_raw = li.get("quantity") or "0"
         try:
@@ -234,10 +250,10 @@ async def apply_square_order_and_sync_ebay(
         except Exception:
             qty = 0
         if var_id and qty > 0:
-            sold_by_variation[var_id] += qty
+            sold_by_variation[str(var_id)] += qty
 
     decremented: list[dict[str, Any]] = []
-    offer_id_to_qty: dict[str, int] = {}
+    items_to_update: list[dict[str, Any]] = []
 
     for var_id, qty_sold in sold_by_variation.items():
         pm = db.scalar(select(ProductMap).where(ProductMap.square_variation_id == var_id))
@@ -256,15 +272,15 @@ async def apply_square_order_and_sync_ebay(
         decremented.append({"sku": pm.sku, "sold": qty_sold, "before": before, "after": after})
 
         if pm.ebay_offer_id:
-            offer_id_to_qty[str(pm.ebay_offer_id)] = after
+            items_to_update.append({"sku": pm.sku, "offer_id": str(pm.ebay_offer_id), "qty": after})
 
     event.applied_inventory = True
     db.commit()
 
     ebay_synced = True
-    if offer_id_to_qty:
+    if items_to_update:
         try:
-            await _ebay_bulk_update_quantity(offer_id_to_qty)
+            await _ebay_bulk_update_quantity(items_to_update)
         except Exception as e:
             print("EBAY SYNC FAILED:", repr(e))
             ebay_synced = False
@@ -272,7 +288,13 @@ async def apply_square_order_and_sync_ebay(
     event.ebay_synced = ebay_synced
     db.commit()
 
-    return {"event_id": event_id, "order_id": order_id, "applied_inventory": True, "ebay_synced": ebay_synced, "decremented": decremented}
+    return {
+        "event_id": event_id,
+        "order_id": order_id,
+        "applied_inventory": True,
+        "ebay_synced": ebay_synced,
+        "decremented": decremented,
+    }
 
 
 async def apply_square_inventory_change_and_sync_ebay(
@@ -283,7 +305,7 @@ async def apply_square_inventory_change_and_sync_ebay(
     changes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """
-    When Square inventory is manually changed, we treat Square as source-of-truth and set DB on_hand to
+    When Square inventory is manually changed, treat Square as source-of-truth and set DB on_hand to
     the IN_STOCK quantity, then push that to eBay.
     """
     event = db.get(WebhookEvent, event_id)
@@ -292,18 +314,22 @@ async def apply_square_inventory_change_and_sync_ebay(
         db.add(event)
         db.commit()
 
+    # Idempotency: if inventory already applied, only retry eBay sync if needed
     if event.applied_inventory:
         if not event.ebay_synced:
-            offer_map = _sync_all_ebay_offers_from_db(db=db)
-            await _ebay_bulk_update_quantity(offer_map)
+            items = _sync_all_ebay_offers_from_db(db=db)
+            await _ebay_bulk_update_quantity(items)
             event.ebay_synced = True
             db.commit()
         return {"event_id": event_id, "applied_inventory": True, "ebay_synced": event.ebay_synced}
 
     updated: list[dict[str, Any]] = []
-    offer_id_to_qty: dict[str, int] = {}
+    items_to_update: list[dict[str, Any]] = []
 
     for ch in changes:
+        if not isinstance(ch, dict):
+            continue
+
         var_id = str(ch.get("catalog_object_id") or "")
         qty = int(ch.get("quantity") or 0)
         state = str(ch.get("state") or "")
@@ -330,18 +356,19 @@ async def apply_square_inventory_change_and_sync_ebay(
         updated.append({"sku": pm.sku, "before": before, "after": after, "square_variation_id": var_id})
 
         if pm.ebay_offer_id:
-            offer_id_to_qty[str(pm.ebay_offer_id)] = after
+            items_to_update.append({"sku": pm.sku, "offer_id": str(pm.ebay_offer_id), "qty": after})
 
     event.applied_inventory = True
     db.commit()
 
     ebay_synced = True
-    if offer_id_to_qty:
+    if items_to_update:
         try:
-            await _ebay_bulk_update_quantity(offer_id_to_qty)
+            await _ebay_bulk_update_quantity(items_to_update)
         except Exception as e:
             print("EBAY SYNC FAILED:", repr(e))
             ebay_synced = False
+
     event.ebay_synced = ebay_synced
     db.commit()
 
