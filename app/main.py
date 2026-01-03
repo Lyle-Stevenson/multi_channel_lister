@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -38,6 +39,20 @@ from app.ebay_platform_webhook import (
 )
 
 app = FastAPI(title="Multi-Channel Lister (Square + eBay UK)")
+
+ECHO_WINDOW = timedelta(minutes=5)
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_aware_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 async def _wait_for_db_and_init(max_attempts: int = 30) -> None:
@@ -237,19 +252,6 @@ async def _process_square_inventory(event_id: str, event_type: str, changes: lis
 async def _process_ebay_platform_event(raw_body: bytes) -> dict:
     print("EBAY PLATFORM: raw_len =", len(raw_body))
 
-    # DEBUG: log full XML payload (truncate to avoid insane log spam)
-    try:
-        xml_text = raw_body.decode("utf-8", errors="replace")
-    except Exception:
-        xml_text = repr(raw_body)
-
-    MAX = 30000  # adjust if you want more/less
-    if len(xml_text) > MAX:
-        print("EBAY PLATFORM XML (truncated):\n", xml_text[:MAX], "\n...TRUNCATED...")
-    else:
-        print("EBAY PLATFORM XML:\n", xml_text)
-
-
     try:
         ev = parse_ebay_platform_notification(raw_body)
     except Exception as e:
@@ -274,6 +276,8 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
         ev.quantity_sold,
         "qty_purchased=",
         ev.quantity_purchased,
+        "event_time=",
+        ev.event_time,
     )
 
     with SessionLocal() as db:
@@ -292,40 +296,65 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
             print("EBAY PLATFORM: no mapping found (sku/item_id):", ev.sku, ev.item_id)
             existing.applied_inventory = True
             db.commit()
-            return {
-                "event": ev.event_name,
-                "event_id": event_id,
-                "sku": ev.sku,
-                "item_id": ev.item_id,
-                "action": "ignored_no_mapping",
-            }
+            return {"event": ev.event_name, "event_id": event_id, "sku": ev.sku, "action": "ignored_no_mapping"}
+
+        inv = db.get(Inventory, pm.sku)
+        now = utcnow()
+        inv_last_at = _as_aware_utc(inv.last_source_at) if inv else None
+
+        # ---- Echo guard: ignore eBay events caused by our own Square->eBay sync
+        if inv and inv.last_source == "square" and inv_last_at is not None and (now - inv_last_at) <= ECHO_WINDOW:
+            # We still need the "truth" value to compare, so we do that below and only ignore if equal.
+
+            pass
 
         updated: dict | None = None
+        square_status = "skipped"
 
         if ev.event_name == "ItemRevised":
-            if ev.quantity is None:
+            # Truth source: eBay offer availableQuantity (SOAP Quantity can be stale/out-of-order)
+            truth_qty: int | None = None
+            if pm.ebay_offer_id:
+                try:
+                    truth_qty = await ebay_service.get_offer_available_quantity(str(pm.ebay_offer_id))
+                    print("EBAY PLATFORM: offer truth availableQuantity =", truth_qty)
+                except Exception as e:
+                    print("EBAY PLATFORM: get_offer_available_quantity FAILED:", repr(e))
+
+            if truth_qty is None:
+                if ev.quantity is None:
+                    existing.applied_inventory = True
+                    db.commit()
+                    return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_missing_quantity"}
+                # fallback from SOAP
+                truth_qty = max(int(ev.quantity) - int(ev.quantity_sold or 0), 0)
+
+            # If this is an echo from Square->eBay and quantities match DB, ignore
+            if (
+                inv
+                and inv.last_source == "square"
+                and inv_last_at is not None
+                and (now - inv_last_at) <= ECHO_WINDOW
+                and int(inv.on_hand) == int(truth_qty)
+            ):
+                print("EBAY PLATFORM: echo from square detected; ignoring")
                 existing.applied_inventory = True
                 db.commit()
-                return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_missing_quantity"}
+                return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_echo"}
 
             updated = await apply_ebay_item_revised_and_sync_square(
                 db=db,
                 event_id=event_id,
                 pm=pm,
-                quantity=int(ev.quantity),
-                quantity_sold=int(ev.quantity_sold or 0),
+                quantity=int(truth_qty),
+                quantity_sold=0,  # already resolved to available
             )
 
         elif ev.event_name == "FixedPriceTransaction":
             if ev.quantity_purchased is None:
                 existing.applied_inventory = True
                 db.commit()
-                return {
-                    "event": ev.event_name,
-                    "event_id": event_id,
-                    "sku": pm.sku,
-                    "action": "ignored_missing_quantity_purchased",
-                }
+                return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_missing_quantity_purchased"}
 
             updated = await apply_ebay_fixed_price_txn_and_sync_square(
                 db=db,
@@ -339,36 +368,26 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
             db.commit()
             return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_unhandled_event"}
 
-        # -------------------------
-        # NEW: skip Square update if no quantity change
-        # -------------------------
-        square_status = "skipped"
-        try:
-            if not updated or updated.get("before") == updated.get("after"):
-                print("EBAY PLATFORM: no inventory change; skipping Square update")
-                square_status = "skipped"
-            else:
+        # Only update Square if inventory actually changed
+        if updated["before"] == updated["after"]:
+            print("EBAY PLATFORM: no inventory change; skipping Square update")
+            square_status = "skipped"
+        else:
+            try:
                 await square_service.set_stock_exact(
                     variation_id=updated["square_variation_id"],
                     new_quantity=updated["after"],
                 )
                 square_status = "updated"
-        except Exception as e:
-            print("EBAY PLATFORM: Square set_stock_exact FAILED:", repr(e))
-            square_status = "failed"
+            except Exception as e:
+                print("EBAY PLATFORM: Square set_stock_exact FAILED:", repr(e))
+                square_status = "failed"
 
         existing.applied_inventory = True
         db.commit()
 
         print("EBAY PLATFORM: applied:", updated, "square:", square_status)
-        return {
-            "event": ev.event_name,
-            "event_id": event_id,
-            "sku": pm.sku,
-            "action": "applied",
-            "updated": updated,
-            "square": square_status,
-        }
+        return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "applied", "updated": updated, "square": square_status}
 
 
 @app.post("/webhooks/ebay/platform/kdfos45rfs")
@@ -399,7 +418,6 @@ async def square_webhook(
     if not event_id:
         raise HTTPException(status_code=400, detail="Missing event_id")
 
-    # payment flow -> order decrement
     order_id, status = extract_payment_order_id_and_status(payload)
     if order_id and (status or "").upper() == "COMPLETED":
         background_tasks.add_task(_process_square_paid, str(event_id), str(event_type), str(order_id))

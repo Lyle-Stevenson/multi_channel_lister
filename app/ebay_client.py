@@ -46,10 +46,6 @@ def _extract_offer_id_from_offer_exists_error(body_text: str) -> str | None:
 
 
 def _to_aspects(item_specifics: dict[str, str] | None) -> dict[str, list[str]] | None:
-    """
-    Inventory API expects product.aspects as name -> list of values.
-    Example: {"Type": ["Figure"], "Brand": ["Banpresto"]}
-    """
     if not item_specifics:
         return None
 
@@ -150,9 +146,6 @@ class EbayClient:
         quantity: int,
         item_specifics: dict[str, str] | None = None,
     ) -> None:
-        """
-        IMPORTANT: Required item specifics for a category are validated from product.aspects on the inventory item.
-        """
         url = f"{EBAY_API_BASE}/sell/inventory/v1/inventory_item/{sku}"
 
         product: dict[str, Any] = {
@@ -258,7 +251,17 @@ class EbayClient:
             listing_id = data.get("listingId") or data.get("listing_id")
             return str(listing_id) if listing_id else ""
 
-    # ---------- NEW: Quantity-only update (used by Square webhook) ----------
+    # ---------- NEW: read offer (truth for availableQuantity) ----------
+
+    async def get_offer(self, offer_id: str) -> dict[str, Any]:
+        url = f"{EBAY_API_BASE}/sell/inventory/v1/offer/{offer_id}"
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.get(url, headers=await self._headers(content_type="application/json"))
+            if r.status_code >= 400:
+                raise RuntimeError(f"eBay get offer failed: HTTP {r.status_code}: {r.text}")
+            return r.json()
+
+    # ---------- Quantity-only update (used by Square webhook) ----------
 
     async def bulk_update_price_quantity(
         self,
@@ -268,17 +271,11 @@ class EbayClient:
         merchant_location_key: str,
         quantity: int,
     ) -> dict[str, Any]:
-        """
-        Updates:
-          - inventory availability quantity
-          - offer availableQuantity
-        without republishing / relisting.
-        """
         url = f"{EBAY_API_BASE}/sell/inventory/v1/bulk_update_price_quantity"
         payload = {
             "requests": [
                 {
-                    "sku": sku,
+                    "sku": str(sku),
                     "shipToLocationAvailability": {
                         "quantity": int(quantity),
                         "availabilityDistributions": [

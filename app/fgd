@@ -1,0 +1,291 @@
+api-1  | EBAY PLATFORM XML:
+api-1  |  <?xml version="1.0" encoding="UTF-8"?>
+api-1  | <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+api-1  |  <soapenv:Header>
+api-1  |   <ebl:RequesterCredentials soapenv:mustUnderstand="0" xmlns:ns="urn:ebay:apis:eBLBaseComponents" xmlns:ebl="urn:ebay:apis:eBLBaseComponents">
+api-1  |    <ebl:NotificationSignature xmlns:ebl="urn:ebay:apis:eBLBaseComponents">oEIVkeAlJ7/3HdpP60aHew==</ebl:NotificationSignature>
+api-1  |   </ebl:RequesterCredentials>
+api-1  |  </soapenv:Header>
+api-1  |  <soapenv:Body>
+api-1  |   <GetItemResponse xmlns="urn:ebay:apis:eBLBaseComponents">
+api-1  |    <Timestamp>2026-01-03T22:32:24.943Z</Timestamp>
+api-1  |    <Ack>Success</Ack>
+api-1  |    <CorrelationID>4327153108720</CorrelationID>
+api-1  |    <Version>1193</Version>
+api-1  |    <Build>E1193_CORE_API_19146280_R1</Build>
+api-1  |    <NotificationEventName>ItemRevised</NotificationEventName>
+api-1  |    <RecipientUserID>heyheyanime</RecipientUserID>
+api-1  |    <EIASToken>nY+sHZ2PrBmdj6wVnY+sEZ2PrA2dj6AEl4qnAJSCpQydj6x9nY+seQ==</EIASToken>
+api-1  |    <Item>
+api-1  |     <AutoPay>false</AutoPay>
+api-1  |     <BuyerProtection>ItemIneligible</BuyerProtection>
+api-1  |     <BuyItNowPrice currencyID="GBP">0.0</BuyItNowPrice>
+api-1  |     <Country>GB</Country>
+api-1  |     <Currency>GBP</Currency>
+api-1  |     <Description>&lt;p&gt;&lt;strong&gt;Condition:&lt;/strong&gt; NEW&lt;/p&gt;&lt;p&gt;&lt;strong&gt;Size:&lt;/strong&gt; 7.02 inches&lt;/p&gt;&lt;p&gt;Hatsune Miku Conceptual Series Vol.3 Luminasta Figure.&lt;/p&gt;&lt;p&gt;All our items are officially licensed and imported directly from Japan!&lt;/p&gt;&lt;p&gt;Check out our other anime merchandise and if you have any questions, don&apos;t hesitate to reach out to us!&lt;/p&gt;</Description>
+api-1  |     <ItemID>257291417373</ItemID>
+api-1  |     <ListingDetails>
+api-1  |      <Adult>false</Adult>
+api-1  |      <BindingAuction>false</BindingAuction>
+api-1  |      <CheckoutEnabled>true</CheckoutEnabled>
+api-1  |      <ConvertedBuyItNowPrice currencyID="GBP">0.0</ConvertedBuyItNowPrice>
+api-1  |      <ConvertedStartPrice currencyID="GBP">200.0</ConvertedStartPrice>
+api-1  |      <ConvertedReservePrice currencyID="GBP">0.0</ConvertedReservePrice>
+api-1  |      <HasReservePrice>false</HasReservePrice>
+api-1  |      <StartTime>2026-01-03T19:02:20.000Z</StartTime>
+api-1  |      <EndTime>2026-02-03T19:02:20.000Z</EndTime>
+api-1  |      <ViewItemURL>https://www.ebay.co.uk/itm/My-eBay-UK-Item-/257291417373</ViewItemURL>
+api-1  |      <HasUnansweredQuestions>false</HasUnansweredQuestions>
+api-1  |      <HasPublicMessages>false</HasPublicMessages>
+api-1  |      <ViewItemURLForNaturalSearch>https://www.ebay.co.uk/itm/My-eBay-UK-Item-/257291417373</ViewItemURLForNaturalSearch>
+api-1  |     </ListingDetails>
+api-1  |     <ListingDesigner>
+api-1  |      <LayoutID>310000</LayoutID>
+api-1  |      <ThemeID>310</ThemeID>
+api-1  |     </ListingDesigner>
+api-1  |     <ListingDuration>GTC</ListingDuration>
+api-1  |     <ListingType>FixedPriceItem</ListingType>
+api-1  |     <Location>Livingston</Location>
+api-1  |     <PrimaryCategory>
+api-1  |      <CategoryID>261055</CategoryID>
+api-1  |      <CategoryName>Collectables:Animation Art &amp; Merchandise:Animation Merchandise:Figures &amp; Statues</CategoryName>
+api-1  |     </PrimaryCategory>
+api-1  |     <PrivateListing>false</PrivateListing>
+api-1  |     <ProductListingDetails>
+api-1  |      <BrandMPN>
+api-1  |       <Brand>Banpresto</Brand>
+api-1  |      </BrandMPN>
+api-1  |      <IncludeeBayProductDetails>true</IncludeeBayProductDetails>
+api-1  |     </ProductListingDetails>
+api-1  |     <Quantity>3</Quantity>
+api-1  |     <IsItemEMSEligible>false</IsItemEMSEligible>
+api-1  |     <ReservePrice currencyID="GBP">0.0</ReservePrice>
+api-1  |     <ReviseStatus>
+api-1  |      <ItemRevised>true</ItemRevised>
+api-1  |     </ReviseStatus>
+api-1  |     <Seller>
+api-1  |      <AboutMePage>false</AboutMePage>
+api-1  |      <Email>heyheyanimeuk@gmail.com</Email>
+api-1  |      <FeedbackScore>965</FeedbackScore>
+api-1  |      <PositiveFeedbackPercent>100.0</PositiveFeedbackPercent>
+api-1  |      <FeedbackPrivate>false</FeedbackPrivate>
+api-1  |      <IDVerified>false</IDVerified>
+api-1  |      <eBayGoodStanding>true</eBayGoodStanding>
+api-1  |      <NewUser>false</NewUser>
+api-1  |      <RegistrationDate>2011-09-16T19:33:43.000Z</RegistrationDate>
+api-1  |      <Site>UK</Site>
+api-1  |      <Status>Confirmed</Status>
+api-1  |      <UserID>heyheyanime</UserID>
+api-1  |      <UserIDChanged>false</UserIDChanged>
+api-1  |      <UserIDLastChanged>2021-10-19T14:19:49.000Z</UserIDLastChanged>
+api-1  |      <VATStatus>VATTax</VATStatus>
+api-1  |      <SellerInfo>
+api-1  |       <AllowPaymentEdit>true</AllowPaymentEdit>
+api-1  |       <CheckoutEnabled>true</CheckoutEnabled>
+api-1  |       <CIPBankAccountStored>false</CIPBankAccountStored>
+api-1  |       <GoodStanding>true</GoodStanding>
+api-1  |       <LiveAuctionAuthorized>false</LiveAuctionAuthorized>
+api-1  |       <MerchandizingPref>OptIn</MerchandizingPref>
+api-1  |       <QualifiesForB2BVAT>false</QualifiesForB2BVAT>
+api-1  |       <StoreOwner>true</StoreOwner>
+api-1  |       <StoreURL>https://www.ebay.co.uk/str/heyheyanime</StoreURL>
+api-1  |       <SellerBusinessType>Commercial</SellerBusinessType>
+api-1  |       <SafePaymentExempt>false</SafePaymentExempt>
+api-1  |      </SellerInfo>
+api-1  |      <MotorsDealer>false</MotorsDealer>
+api-1  |     </Seller>
+api-1  |     <SellingStatus>
+api-1  |      <BidCount>0</BidCount>
+api-1  |      <BidIncrement currencyID="GBP">0.0</BidIncrement>
+api-1  |      <ConvertedCurrentPrice currencyID="GBP">200.0</ConvertedCurrentPrice>
+api-1  |      <CurrentPrice currencyID="GBP">200.0</CurrentPrice>
+api-1  |      <LeadCount>0</LeadCount>
+api-1  |      <MinimumToBid currencyID="GBP">200.0</MinimumToBid>
+api-1  |      <QuantitySold>0</QuantitySold>
+api-1  |      <ReserveMet>true</ReserveMet>
+api-1  |      <SecondChanceEligible>false</SecondChanceEligible>
+api-1  |      <ListingStatus>Active</ListingStatus>
+api-1  |      <QuantitySoldByPickupInStore>0</QuantitySoldByPickupInStore>
+api-1  |     </SellingStatus>
+api-1  |     <ShippingDetails>
+api-1  |      <ApplyShippingDiscount>false</ApplyShippingDiscount>
+api-1  |      <CalculatedShippingRate>
+api-1  |       <WeightMajor measurementSystem="Metric" unit="kg">0</WeightMajor>
+api-1  |       <WeightMinor measurementSystem="Metric" unit="gm">0</WeightMinor>
+api-1  |      </CalculatedShippingRate>
+api-1  |      <SalesTax>
+api-1  |       <SalesTaxPercent>0.0</SalesTaxPercent>
+api-1  |       <ShippingIncludedInTax>false</ShippingIncludedInTax>
+api-1  |      </SalesTax>
+api-1  |      <ShippingServiceOptions>
+api-1  |       <ShippingService>UK_RoyalMail2ndClassParcel</ShippingService>
+api-1  |       <ShippingServiceCost currencyID="GBP">0.0</ShippingServiceCost>
+api-1  |       <ShippingServiceAdditionalCost currencyID="GBP">0.0</ShippingServiceAdditionalCost>
+api-1  |       <ShippingServicePriority>1</ShippingServicePriority>
+api-1  |       <ExpeditedService>false</ExpeditedService>
+api-1  |       <ShippingTimeMin>2</ShippingTimeMin>
+api-1  |       <ShippingTimeMax>3</ShippingTimeMax>
+api-1  |       <FreeShipping>true</FreeShipping>
+api-1  |      </ShippingServiceOptions>
+api-1  |      <ShippingServiceOptions>
+api-1  |       <ShippingService>UK_RoyalMailNextDay</ShippingService>
+api-1  |       <ShippingServiceCost currencyID="GBP">2.0</ShippingServiceCost>
+api-1  |       <ShippingServiceAdditionalCost currencyID="GBP">0.0</ShippingServiceAdditionalCost>
+api-1  |       <ShippingServicePriority>2</ShippingServicePriority>
+api-1  |       <ExpeditedService>true</ExpeditedService>
+api-1  |       <ShippingTimeMin>1</ShippingTimeMin>
+api-1  |       <ShippingTimeMax>2</ShippingTimeMax>
+api-1  |      </ShippingServiceOptions>
+api-1  |      <ShippingServiceOptions>
+api-1  |       <ShippingService>UK_RoyalMailSpecialDeliveryNextDay</ShippingService>
+api-1  |       <ShippingServiceCost currencyID="GBP">8.85</ShippingServiceCost>
+api-1  |       <ShippingServiceAdditionalCost currencyID="GBP">0.0</ShippingServiceAdditionalCost>
+api-1  |       <ShippingServicePriority>3</ShippingServicePriority>
+api-1  |       <ExpeditedService>true</ExpeditedService>
+api-1  |       <ShippingTimeMin>1</ShippingTimeMin>
+api-1  |       <ShippingTimeMax>1</ShippingTimeMax>
+api-1  |      </ShippingServiceOptions>
+api-1  |      <ShippingType>Flat</ShippingType>
+api-1  |      <ThirdPartyCheckout>false</ThirdPartyCheckout>
+api-1  |      <ShippingDiscountProfileID>0</ShippingDiscountProfileID>
+api-1  |      <InternationalShippingDiscountProfileID>0</InternationalShippingDiscountProfileID>
+api-1  |      <ExcludeShipToLocation>DE</ExcludeShipToLocation>
+api-1  |      <SellerExcludeShipToLocationsPreference>true</SellerExcludeShipToLocationsPreference>
+api-1  |     </ShippingDetails>
+api-1  |     <ShipToLocations>GB</ShipToLocations>
+api-1  |     <Site>UK</Site>
+api-1  |     <StartPrice currencyID="GBP">200.0</StartPrice>
+api-1  |     <Storefront>
+api-1  |      <StoreCategoryID>1</StoreCategoryID>
+api-1  |      <StoreCategory2ID>0</StoreCategory2ID>
+api-1  |      <StoreURL>https://www.ebay.co.uk/str/heyheyanime</StoreURL>
+api-1  |     </Storefront>
+api-1  |     <TimeLeft>P30DT20H29M56S</TimeLeft>
+api-1  |     <Title>My eBay UK Item</Title>
+api-1  |     <UUID>AAE16CAB8A7EA479BFF8CBE23C3CA234</UUID>
+api-1  |     <VATDetails>
+api-1  |      <VATPercent>0.0</VATPercent>
+api-1  |     </VATDetails>
+api-1  |     <GetItFast>false</GetItFast>
+api-1  |     <SKU>SKU123</SKU>
+api-1  |     <PostalCode>EH54 6TB</PostalCode>
+api-1  |     <PictureDetails>
+api-1  |      <GalleryType>Gallery</GalleryType>
+api-1  |      <PictureURL>https://i.ebayimg.com/00/s/MTYwMFgxMjAw/z/IgYAAeSwFP9pWWew/$_1.JPG?set_id=8800005007</PictureURL>
+api-1  |      <PictureURL>https://i.ebayimg.com/00/s/MTYwMFgxMjAw/z/82kAAeSwhuhpWWex/$_1.JPG?set_id=8800005007</PictureURL>
+api-1  |      <PictureURL>https://i.ebayimg.com/00/s/MTYwMFgxMjAw/z/7fcAAeSwkwVpWWez/$_1.JPG?set_id=8800005007</PictureURL>
+api-1  |      <PictureURL>https://i.ebayimg.com/00/s/MTYwMFgxMjAw/z/54kAAeSwPuhpWWe1/$_1.JPG?set_id=8800005007</PictureURL>
+api-1  |      <PictureURL>https://i.ebayimg.com/00/s/MTYwMFgxMjAw/z/~cEAAeSwztNpWWe3/$_1.JPG?set_id=8800005007</PictureURL>
+api-1  |      <PictureURL>https://i.ebayimg.com/00/s/MTYwMFgxMjAw/z/GCQAAeSwnRVpWWe4/$_1.JPG?set_id=8800005007</PictureURL>
+api-1  |      <PictureSource>EPS</PictureSource>
+api-1  |     </PictureDetails>
+api-1  |     <DispatchTimeMax>0</DispatchTimeMax>
+api-1  |     <ProxyItem>false</ProxyItem>
+api-1  |     <ItemSpecifics>
+api-1  |      <NameValueList>
+api-1  |       <Name>Type</Name>
+api-1  |       <Value>Figure</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |      <NameValueList>
+api-1  |       <Name>Franchise</Name>
+api-1  |       <Value>One Piece</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |      <NameValueList>
+api-1  |       <Name>Character</Name>
+api-1  |       <Value>Miku</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |      <NameValueList>
+api-1  |       <Name>Brand</Name>
+api-1  |       <Value>Banpresto</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |      <NameValueList>
+api-1  |       <Name>TV Show</Name>
+api-1  |       <Value>One Piece</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |      <NameValueList>
+api-1  |       <Name>Material</Name>
+api-1  |       <Value>ABS, PVC</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |      <NameValueList>
+api-1  |       <Name>Theme</Name>
+api-1  |       <Value>Anime &amp; Manga</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |      <NameValueList>
+api-1  |       <Name>Original/Licensed Reproduction</Name>
+api-1  |       <Value>Original</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |      <NameValueList>
+api-1  |       <Name>Packaging</Name>
+api-1  |       <Value>Original (Unopened)</Value>
+api-1  |       <Source>ItemSpecific</Source>
+api-1  |      </NameValueList>
+api-1  |     </ItemSpecifics>
+api-1  |     <BusinessSellerDetails>
+api-1  |      <Address>
+api-1  |       <Street1>14 Lady Place</Street1>
+api-1  |       <CityName>Livingston</CityName>
+api-1  |       <StateOrProvince>West Lothian</StateOrProvince>
+api-1  |       <CountryName>United Kingdom</CountryName>
+api-1  |       <PostalCode>EH54 6TB</PostalCode>
+api-1  |       <CompanyName>Hey Hey Anime</CompanyName>
+api-1  |      </Address>
+api-1  |     </BusinessSellerDetails>
+api-1  |     <BuyerGuaranteePrice currencyID="GBP">20000.0</BuyerGuaranteePrice>
+api-1  |     <BuyerRequirementDetails>
+api-1  |      <ShipToRegistrationCountry>true</ShipToRegistrationCountry>
+api-1  |     </BuyerRequirementDetails>
+api-1  |     <ReturnPolicy>
+api-1  |      <ReturnsWithinOption>Days_30</ReturnsWithinOption>
+api-1  |      <ReturnsWithin>30 days</ReturnsWithin>
+api-1  |      <ReturnsAcceptedOption>ReturnsAccepted</ReturnsAcceptedOption>
+api-1  |      <ReturnsAccepted>Returns Accepted</ReturnsAccepted>
+api-1  |      <ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>
+api-1  |      <ShippingCostPaidBy>Buyer</ShippingCostPaidBy>
+api-1  |      <InternationalReturnsAcceptedOption>ReturnsAccepted</InternationalReturnsAcceptedOption>
+api-1  |      <InternationalReturnsWithinOption>Days_30</InternationalReturnsWithinOption>
+api-1  |      <InternationalShippingCostPaidByOption>Buyer</InternationalShippingCostPaidByOption>
+api-1  |     </ReturnPolicy>
+api-1  |     <ConditionID>1000</ConditionID>
+api-1  |     <ConditionDisplayName>New</ConditionDisplayName>
+api-1  |     <PostCheckoutExperienceEnabled>false</PostCheckoutExperienceEnabled>
+api-1  |     <SellerProfiles>
+api-1  |      <SellerShippingProfile>
+api-1  |       <ShippingProfileID>219504536024</ShippingProfileID>
+api-1  |       <ShippingProfileName>Flat: UK_RoyalMail2ndClassParcel free, same wo 4fd505cdba61000</ShippingProfileName>
+api-1  |      </SellerShippingProfile>
+api-1  |      <SellerReturnProfile>
+api-1  |       <ReturnProfileID>219447754024</ReturnProfileID>
+api-1  |       <ReturnProfileName>Returns</ReturnProfileName>
+api-1  |      </SellerReturnProfile>
+api-1  |      <SellerPaymentProfile>
+api-1  |       <PaymentProfileID>219504537024</PaymentProfileID>
+api-1  |       <PaymentProfileName>eBay Managed Payments 4fd505ce0e61000</PaymentProfileName>
+api-1  |      </SellerPaymentProfile>
+api-1  |     </SellerProfiles>
+api-1  |     <ShippingPackageDetails>
+api-1  |      <ShippingIrregular>false</ShippingIrregular>
+api-1  |      <ShippingPackage>None</ShippingPackage>
+api-1  |      <WeightMajor measurementSystem="Metric" unit="kg">0</WeightMajor>
+api-1  |      <WeightMinor measurementSystem="Metric" unit="gm">0</WeightMinor>
+api-1  |     </ShippingPackageDetails>
+api-1  |     <RelistParentID>257290363679</RelistParentID>
+api-1  |     <HideFromSearch>false</HideFromSearch>
+api-1  |     <OutOfStockControl>true</OutOfStockControl>
+api-1  |     <eBayPlus>false</eBayPlus>
+api-1  |     <eBayPlusEligible>false</eBayPlusEligible>
+api-1  |     <IsSecureDescription>true</IsSecureDescription>
+api-1  |    </Item>
+api-1  |   </GetItemResponse>
+api-1  |  </soapenv:Body>
+api-1  | </soapenv:Envelope>
+api-1  | EBAY PLATFORM: parsed event_name= ItemRevised correlation_id= 4327153108720 event_id= 4327153108720 sku= SKU123 item_id= 257291417373 qty= 3 qty_sold= 0 qty_purchased= None
+api-1  | EBAY PLATFORM: no inventory change; skipping Square update
+api-1  | EBAY PLATFORM: applied: {'sku': 'SKU123', 'before': 3, 'after': 3, 'square_variation_id': '7UERZMMI42ZKDCXJWOSBSOYJ'} square: skipped

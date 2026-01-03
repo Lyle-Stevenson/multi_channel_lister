@@ -60,23 +60,31 @@ class SquareService:
                 return 0
             q = counts[0].get("quantity") or "0"
             try:
-                return int(q)
+                return int(float(q))
             except Exception:
                 return 0
 
-    async def set_stock_exact(self, *, variation_id: str, new_quantity: int) -> None:
+    async def set_stock_exact(self, *, variation_id: str, new_quantity: int) -> dict[str, Any]:
         """
-        Force Square IN_STOCK quantity to exactly new_quantity.
-        Uses PHYSICAL_COUNT (absolute set).
+        Set Square IN_STOCK to an exact quantity by computing a delta from current.
+        Uses Inventory ADJUSTMENT (from NONE -> IN_STOCK) to avoid PhysicalCount restrictions.
         """
+        target = max(int(new_quantity), 0)
+        current = await self._get_current_in_stock(variation_id=variation_id)
+        delta = target - current
+
         occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        await self.client.batch_set_inventory_physical_count_in_stock(
-            variation_id=str(variation_id),
-            location_id=self.location_id,
-            quantity=int(new_quantity),
-            occurred_at=occurred_at,
-            idempotency_key=str(uuid.uuid4()),
-        )
+        if delta != 0:
+            inv_idem = str(uuid.uuid4())
+            await self.client.batch_adjust_inventory_in_stock(
+                variation_id=variation_id,
+                location_id=self.location_id,
+                delta_quantity=delta,
+                occurred_at=occurred_at,
+                idempotency_key=inv_idem,
+            )
+
+        return {"variation_id": variation_id, "current": current, "target": target, "delta": delta}
 
     async def upsert_item_with_images_and_inventory(
         self,
@@ -154,19 +162,15 @@ class SquareService:
             if img_res.get("image_id"):
                 image_ids.append(img_res["image_id"])
 
-        # Inventory: set absolute IN_STOCK to target
-        current = await self._get_current_in_stock(variation_id=real_var_id)
-        target = int(quantity)
-
-        if current != target:
-            await self.set_stock_exact(variation_id=real_var_id, new_quantity=target)
+        # Inventory exact set
+        stock_res = await self.set_stock_exact(variation_id=real_var_id, new_quantity=int(quantity))
 
         return {
             "square_item_id": real_item_id,
             "square_variation_id": real_var_id,
             "square_image_ids": image_ids,
             "square_reporting_category": reporting_category or "",
-            "square_inventory_current": current,
-            "square_inventory_target": target,
-            "square_inventory_delta": target - current,
+            "square_inventory_current": stock_res["current"],
+            "square_inventory_target": stock_res["target"],
+            "square_inventory_delta": stock_res["delta"],
         }

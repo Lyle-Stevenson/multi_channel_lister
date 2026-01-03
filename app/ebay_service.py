@@ -38,13 +38,11 @@ class EbayService:
         existing_offer_id: str | None = None,
         item_specifics: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        # 1) Upload local images -> EPS URLs
         eps_urls: list[str] = []
         for p in image_paths:
             eps_url = await self.client.upload_image_from_file(p)
             eps_urls.append(eps_url)
 
-        # 2) Create/replace inventory item INCLUDING product aspects (item specifics)
         await self.client.create_or_replace_inventory_item(
             sku=sku,
             title=title,
@@ -55,7 +53,6 @@ class EbayService:
             item_specifics=item_specifics,
         )
 
-        # 3) Create/replace offer (NO item_specifics here)
         offer_id = await self.client.create_or_replace_offer(
             offer_id=existing_offer_id,
             sku=sku,
@@ -70,7 +67,6 @@ class EbayService:
             return_policy_id=self.return_policy_id,
         )
 
-        # 4) Publish offer -> listing
         listing_id = await self.client.publish_offer(offer_id)
 
         return {
@@ -82,18 +78,14 @@ class EbayService:
             "ebay_item_specifics": item_specifics or {},
         }
 
-    # ---------- NEW: Quantity-only update (used by Square webhook) ----------
-
-    async def update_quantity_only(
-        self,
-        *,
-        sku: str,
-        offer_id: str,
-        new_quantity: int,
-    ) -> dict[str, Any]:
+    async def update_quantity_only(self, *, sku: str, offer_id: str, new_quantity: int) -> dict[str, Any]:
         return await self.client.bulk_update_price_quantity(
             sku=sku,
             offer_id=offer_id,
             merchant_location_key=self.merchant_location_key,
             quantity=int(new_quantity),
         )
+
+    async def get_offer_available_quantity(self, offer_id: str) -> int:
+        data = await self.client.get_offer(str(offer_id))
+        return int(data.get("availableQuantity") or 0)
