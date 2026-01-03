@@ -257,3 +257,45 @@ class EbayClient:
             data = r.json()
             listing_id = data.get("listingId") or data.get("listing_id")
             return str(listing_id) if listing_id else ""
+
+    # ---------- NEW: Quantity-only update (used by Square webhook) ----------
+
+    async def bulk_update_price_quantity(
+        self,
+        *,
+        sku: str,
+        offer_id: str,
+        merchant_location_key: str,
+        quantity: int,
+    ) -> dict[str, Any]:
+        """
+        Updates:
+          - inventory availability quantity
+          - offer availableQuantity
+        without republishing / relisting.
+        """
+        url = f"{EBAY_API_BASE}/sell/inventory/v1/bulk_update_price_quantity"
+        payload = {
+            "requests": [
+                {
+                    "sku": sku,
+                    "shipToLocationAvailability": {
+                        "quantity": int(quantity),
+                        "availabilityDistributions": [
+                            {"merchantLocationKey": merchant_location_key, "quantity": int(quantity)}
+                        ],
+                    },
+                    "offers": [{"offerId": str(offer_id), "availableQuantity": int(quantity)}],
+                }
+            ]
+        }
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                url,
+                headers=await self._headers(content_type="application/json", content_language="en-GB"),
+                json=payload,
+            )
+            if r.status_code >= 400:
+                raise RuntimeError(f"eBay bulk_update_price_quantity failed: HTTP {r.status_code}: {r.text}")
+            return r.json()

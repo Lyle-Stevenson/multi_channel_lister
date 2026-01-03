@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import mimetypes
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from app.config import settings
+
 
 def _mime_for_path(p: Path) -> str:
+    mime, _ = mimetypes.guess_type(str(p))
+    if mime in {"image/jpeg", "image/pjpeg", "image/png", "image/gif", "image/x-png"}:
+        return mime
     ext = p.suffix.lower()
     if ext in {".jpg", ".jpeg"}:
         return "image/jpeg"
@@ -18,141 +27,50 @@ def _mime_for_path(p: Path) -> str:
 
 
 class SquareClient:
-    def __init__(self, access_token: str, version: str = "2025-01-22"):
-        if not access_token or not str(access_token).strip():
-            raise RuntimeError("Square access token is missing. Set SQUARE_ACCESS_TOKEN in .env.")
-        self.access_token = access_token
-        self.version = version
-        self.base_url = "https://connect.squareup.com/v2"
+    def __init__(self) -> None:
+        self.base_url = "https://connect.squareup.com"
+        self.location_id = settings.square_location_id
+        self.version = settings.square_version
+        self.token = settings.square_access_token
 
     def _headers(self, content_type: str | None = None) -> dict[str, str]:
         h = {
-            "Authorization": f"Bearer {self.access_token}",
+            "Authorization": f"Bearer {self.token}",
             "Square-Version": self.version,
         }
         if content_type:
             h["Content-Type"] = content_type
         return h
 
-    async def upsert_catalog_object(self, *, idempotency_key: str, catalog_object: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.base_url}/catalog/object"
-        payload = {"idempotency_key": idempotency_key, "object": catalog_object}
-
+    async def retrieve_order(self, order_id: str) -> dict[str, Any]:
+        url = f"{self.base_url}/v2/orders/{order_id}"
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(url, headers=self._headers("application/json"), json=payload)
+            r = await client.get(url, headers=self._headers("application/json"))
             if r.status_code >= 400:
-                raise RuntimeError(f"Square upsert failed: HTTP {r.status_code}: {r.text}")
+                raise RuntimeError(f"Square retrieve order failed: HTTP {r.status_code}: {r.text}")
             return r.json()
 
-    async def search_catalog_categories_by_name(self, *, name: str) -> list[dict[str, Any]]:
-        url = f"{self.base_url}/catalog/search"
-        payload = {
-            "object_types": ["CATEGORY"],
-            "query": {"text_query": {"keywords": [name]}},
-            "include_related_objects": False,
-            "limit": 50,
-        }
-
+    async def retrieve_payment(self, payment_id: str) -> dict[str, Any]:
+        url = f"{self.base_url}/v2/payments/{payment_id}"
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(url, headers=self._headers("application/json"), json=payload)
+            r = await client.get(url, headers=self._headers("application/json"))
             if r.status_code >= 400:
-                raise RuntimeError(f"Square category search failed: HTTP {r.status_code}: {r.text}")
-            data = r.json()
-            return data.get("objects") or []
-
-    async def create_or_get_category_id(self, *, category_name: str) -> str:
-        name = category_name.strip()
-        if not name:
-            raise ValueError("category_name is empty")
-
-        objs = await self.search_catalog_categories_by_name(name=name)
-        for o in objs:
-            if o.get("type") == "CATEGORY":
-                cd = o.get("category_data") or {}
-                if (cd.get("name") or "").strip().lower() == name.lower():
-                    return o["id"]
-
-        idem = f"cat-{name.lower().replace(' ', '-')}"
-        cat_obj = {"type": "CATEGORY", "id": f"#{idem}", "category_data": {"name": name}}
-        up = await self.upsert_catalog_object(idempotency_key=idem, catalog_object=cat_obj)
-        return up["catalog_object"]["id"]
-
-    async def create_catalog_image(
-        self,
-        image_path: Path,
-        *,
-        object_id: str,
-        idempotency_key: str,
-        is_primary: bool = False,
-    ) -> dict[str, Any]:
-        url = f"{self.base_url}/catalog/images"
-
-        mime = _mime_for_path(image_path)
-        if mime == "application/octet-stream":
-            raise RuntimeError(
-                f"Unsupported image type for Square: {image_path.name}. Use .jpg/.jpeg, .png, or .gif"
-            )
-
-        image_obj = {
-            "type": "IMAGE",
-            "id": f"#{idempotency_key}",
-            "image_data": {"name": image_path.stem, "caption": image_path.name},
-        }
-
-        request_part = {
-            "idempotency_key": idempotency_key,
-            "image": image_obj,
-            "object_id": object_id,
-            "is_primary": bool(is_primary),
-        }
-
-        files = {
-            "file": (image_path.name, image_path.read_bytes(), mime),
-            "request": (None, httpx._content.json_dumps(request_part), "application/json"),
-        }
-
-        async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.post(url, headers=self._headers(), files=files)
-            if r.status_code >= 400:
-                raise RuntimeError(f"Square create image failed: HTTP {r.status_code}: {r.text}")
-
-            data = r.json()
-            img = data.get("image") or {}
-            return {"image_id": img.get("id"), "raw": data}
-
-    async def batch_adjust_inventory_in_stock(
-        self,
-        *,
-        variation_id: str,
-        location_id: str,
-        delta_quantity: int,
-        occurred_at: str,
-        idempotency_key: str,
-    ) -> dict[str, Any]:
-        """
-        Use ADJUSTMENT to move quantity into IN_STOCK.
-        This avoids the "Physical counts can only be done to the IN_STOCK state" failure mode.
-        """
-        url = f"{self.base_url}/inventory/changes/batch-create"
-        payload = {
-            "idempotency_key": idempotency_key,
-            "changes": [
-                {
-                    "type": "ADJUSTMENT",
-                    "adjustment": {
-                        "catalog_object_id": variation_id,
-                        "location_id": location_id,
-                        "from_state": "NONE",
-                        "to_state": "IN_STOCK",
-                        "quantity": str(int(delta_quantity)),
-                        "occurred_at": occurred_at,
-                    },
-                }
-            ],
-        }
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(url, headers=self._headers("application/json"), json=payload)
-            if r.status_code >= 400:
-                raise RuntimeError(f"Square batch_adjust_inventory failed: HTTP {r.status_code}: {r.text}")
+                raise RuntimeError(f"Square retrieve payment failed: HTTP {r.status_code}: {r.text}")
             return r.json()
+
+    @staticmethod
+    def verify_webhook_signature(
+        *,
+        signature_key: str,
+        notification_url: str,
+        raw_body: bytes,
+        provided_signature: str,
+    ) -> bool:
+        """
+        expected = base64(hmac_sha256(signature_key, notification_url + raw_body))
+        header = x-square-hmacsha256-signature
+        """
+        msg = notification_url.encode("utf-8") + raw_body
+        digest = hmac.new(signature_key.encode("utf-8"), msg, hashlib.sha256).digest()
+        expected = base64.b64encode(digest).decode("utf-8")
+        return hmac.compare_digest(expected, provided_signature or "")

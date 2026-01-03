@@ -1,30 +1,46 @@
 services:
+  api:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # For local debugging you can uncomment:
+    # ports:
+    #   - "8000:8000"
+    volumes:
+      - ./:/app
+
   db:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
       POSTGRES_DB: app
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app -d app"]
-      interval: 3s
-      timeout: 3s
-      retries: 30
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
-  api:
-    build: .
-    env_file: .env
-    ports:
-      - "8000:8000"
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
     depends_on:
-      db:
-        condition: service_healthy
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
     volumes:
-      - ./:/app
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
