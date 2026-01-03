@@ -23,6 +23,13 @@ _ebay_cached_token: dict[str, Any] | None = None
 # Window during which we treat Square inventory webhooks as "echo" of our own eBay->Square update
 ECHO_WINDOW = timedelta(minutes=5)
 
+def _as_aware_utc(dt: datetime) -> datetime:
+    # If DB returns naive datetime, treat it as UTC.
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 
 def verify_square_signature(*, raw_body: bytes, signature: str | None) -> bool:
     """
@@ -372,7 +379,7 @@ async def apply_square_inventory_change_and_sync_ebay(
         if (
             inv.last_source == "ebay"
             and inv.last_source_at is not None
-            and (now - inv.last_source_at) <= ECHO_WINDOW
+            and (now - _as_aware_utc(inv.last_source_at)) <= ECHO_WINDOW
             and before == incoming
         ):
             inv.last_source = None
