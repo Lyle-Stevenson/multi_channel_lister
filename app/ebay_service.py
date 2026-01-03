@@ -81,3 +81,19 @@ class EbayService:
             "ebay_condition": condition,
             "ebay_item_specifics": item_specifics or {},
         }
+
+    # ---------- NEW: Quantity-only update (used by Square webhook) ----------
+
+    async def update_quantity_only(
+        self,
+        *,
+        sku: str,
+        offer_id: str,
+        new_quantity: int,
+    ) -> dict[str, Any]:
+        return await self.client.bulk_update_price_quantity(
+            sku=sku,
+            offer_id=offer_id,
+            merchant_location_key=self.merchant_location_key,
+            quantity=int(new_quantity),
+        )

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from sqlalchemy import String, Integer, DateTime, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import String, Integer, DateTime
 
 from app.db import Base
 
@@ -32,4 +32,24 @@ class Inventory(Base):
     sku: Mapped[str] = mapped_column(String(80), primary_key=True)
     on_hand: Mapped[int] = mapped_column(Integer, default=0)
 
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WebhookEvent(Base):
+    """
+    Idempotency + retry support for incoming webhooks.
+    - applied_inventory: inventory decrement has been applied once
+    - ebay_synced: eBay quantity update succeeded
+    """
+    __tablename__ = "webhook_event"
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20), default="square")
+    event_type: Mapped[str] = mapped_column(String(80), default="")
+    order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    applied_inventory: Mapped[bool] = mapped_column(Boolean, default=False)
+    ebay_synced: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

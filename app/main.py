@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
@@ -22,20 +22,23 @@ from app.ebay_service import EbayService
 
 from app.multi_service import MultiChannelService
 
+from app.square_webhook import (
+    verify_square_signature,
+    extract_payment_order_id_and_status,
+    extract_inventory_change,
+    apply_square_order_and_sync_ebay,
+    apply_square_inventory_change_and_sync_ebay,
+)
+
 app = FastAPI(title="Multi-Channel Lister (Square + eBay UK)")
 
 
 async def _wait_for_db_and_init(max_attempts: int = 30) -> None:
-    """
-    Wait for Postgres to accept connections, then create tables.
-    """
     last_err: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            # connect + simple roundtrip
             with engine.connect() as conn:
                 conn.exec_driver_sql("SELECT 1")
-            # create tables
             Base.metadata.create_all(bind=engine)
             return
         except OperationalError as e:
@@ -50,14 +53,9 @@ async def startup_event():
     await _wait_for_db_and_init()
 
 
-# ---- Square ----
-square_client = SquareClient(
-    access_token=settings.square_access_token,
-    version=settings.square_version,
-)
+square_client = SquareClient(access_token=settings.square_access_token, version=settings.square_version)
 square_service = SquareService(client=square_client, location_id=settings.square_location_id)
 
-# ---- eBay ----
 ebay_client = EbayClient(
     client_id=settings.ebay_client_id,
     client_secret=settings.ebay_client_secret,
@@ -133,9 +131,7 @@ async def listings_upsert(
     price_gbp: Annotated[float, Form()],
     quantity: Annotated[int, Form()],
     description: Annotated[str, Form()],
-    # Square
     square_reporting_category: Annotated[str | None, Form()] = None,
-    # eBay
     ebay_category_id: Annotated[str, Form()] = "261055",
     ebay_condition: Annotated[str, Form()] = "NEW",
     ebay_item_specifics_json: Annotated[str | None, Form()] = None,
@@ -216,3 +212,51 @@ def list_products():
             }
             for r in rows
         ]
+
+
+async def _process_square_paid(event_id: str, event_type: str, order_id: str) -> None:
+    with SessionLocal() as db:
+        await apply_square_order_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, order_id=order_id)
+
+
+async def _process_square_inventory(event_id: str, event_type: str, changes: list[dict]) -> None:
+    with SessionLocal() as db:
+        await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
+
+
+@app.post("/webhooks/square")
+async def square_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_square_hmacsha256_signature: Annotated[str | None, Header(alias="x-square-hmacsha256-signature")] = None,
+):
+    raw_body = await request.body()
+
+    if not verify_square_signature(raw_body=raw_body, signature=x_square_hmacsha256_signature):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    payload = _safe_json_loads(raw_body.decode("utf-8")) or {}
+    event_id = payload.get("event_id") or payload.get("eventId") or payload.get("id")
+    event_type = payload.get("type") or payload.get("event_type") or ""
+
+    print("square webhook type:", event_type, "event_id:", event_id)
+    print("inventory changes:", extract_inventory_change(payload))
+
+
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Missing event_id")
+
+    # 1) payment flow -> order decrement
+    order_id, status = extract_payment_order_id_and_status(payload)
+    # payment flow
+    if order_id and (status or "").upper() == "COMPLETED":
+        return await _process_square_paid(str(event_id), str(event_type), str(order_id))
+
+    # inventory flow
+    changes = extract_inventory_change(payload)
+    if changes:
+        return await _process_square_inventory(str(event_id), str(event_type), changes)
+        # return {"ok": True}
+
+    # Otherwise ignore (but ack)
+    return {"ok": True}
