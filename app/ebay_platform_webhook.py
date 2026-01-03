@@ -72,8 +72,41 @@ def parse_ebay_platform_notification(xml_bytes: bytes) -> EbayPlatformEvent:
     item_id = _find_any_text(root, "ItemID")
     sku = _find_any_text(root, "SKU")
 
-    qty_txt = _find_any_text(root, "Quantity")
-    qty_sold_txt = _find_any_text(root, "QuantitySold")
+    # Prefer Item-scoped fields to avoid picking up unrelated <Quantity> elsewhere in the SOAP.
+    item_el = None
+    for el in root.iter():
+        if _local(el.tag) == "Item":
+            item_el = el
+            break
+
+    qty_txt = None
+    qty_sold_txt = None
+
+    if item_el is not None:
+        # Quantity directly under Item
+        for el in item_el.iter():
+            if _local(el.tag) == "Quantity" and el.text and el.text.strip():
+                qty_txt = el.text.strip()
+                break
+
+        # QuantitySold under Item/SellingStatus
+        selling_status_el = None
+        for el in item_el.iter():
+            if _local(el.tag) == "SellingStatus":
+                selling_status_el = el
+                break
+        if selling_status_el is not None:
+            for el in selling_status_el.iter():
+                if _local(el.tag) == "QuantitySold" and el.text and el.text.strip():
+                    qty_sold_txt = el.text.strip()
+                    break
+
+    # Fallbacks if Item-scoped values missing
+    if qty_txt is None:
+        qty_txt = _find_any_text(root, "Quantity")
+    if qty_sold_txt is None:
+        qty_sold_txt = _find_any_text(root, "QuantitySold")
+
 
     quantity = None
     quantity_sold = None

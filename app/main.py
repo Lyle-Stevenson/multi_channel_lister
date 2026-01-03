@@ -232,7 +232,7 @@ async def _process_square_inventory(event_id: str, event_type: str, changes: lis
 
 
 # -------------------------
-# eBay Platform Notifications (inline debug)
+# eBay Platform Notifications
 # -------------------------
 async def _process_ebay_platform_event(raw_body: bytes) -> dict:
     print("EBAY PLATFORM: raw_len =", len(raw_body))
@@ -326,13 +326,20 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
             db.commit()
             return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_unhandled_event"}
 
+        # -------------------------
+        # NEW: skip Square update if no quantity change
+        # -------------------------
         square_status = "skipped"
         try:
-            await square_service.set_stock_exact(
-                variation_id=updated["square_variation_id"],
-                new_quantity=updated["after"],
-            )
-            square_status = "updated"
+            if not updated or updated.get("before") == updated.get("after"):
+                print("EBAY PLATFORM: no inventory change; skipping Square update")
+                square_status = "skipped"
+            else:
+                await square_service.set_stock_exact(
+                    variation_id=updated["square_variation_id"],
+                    new_quantity=updated["after"],
+                )
+                square_status = "updated"
         except Exception as e:
             print("EBAY PLATFORM: Square set_stock_exact FAILED:", repr(e))
             square_status = "failed"
