@@ -221,21 +221,20 @@ def list_products():
         ]
 
 
-async def _process_square_paid(event_id: str, event_type: str, order_id: str) -> None:
+async def _process_square_paid(event_id: str, event_type: str, order_id: str) -> dict:
     with SessionLocal() as db:
-        await apply_square_order_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, order_id=order_id)
+        return await apply_square_order_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, order_id=order_id)
 
 
-async def _process_square_inventory(event_id: str, event_type: str, changes: list[dict]) -> None:
+async def _process_square_inventory(event_id: str, event_type: str, changes: list[dict]) -> dict:
     with SessionLocal() as db:
-        await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
+        return await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
 
 
 # -------------------------
-# eBay Platform Notifications (debug inline)
+# eBay Platform Notifications (inline debug)
 # -------------------------
 async def _process_ebay_platform_event(raw_body: bytes) -> dict:
-    # Step 1B: strong logs
     print("EBAY PLATFORM: raw_len =", len(raw_body))
 
     try:
@@ -244,8 +243,7 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
         print("EBAY PLATFORM: parse FAILED:", repr(e))
         return {"action": "parse_failed", "error": repr(e)}
 
-    # CorrelationID is a good idempotency key when present
-    event_id = ev.correlation_id or f"ebay:{ev.event_name}:{ev.item_id or 'noitem'}"
+    event_id = ev.correlation_id or f"ebay_platform:{ev.event_name}:{ev.sku or 'nosku'}:{ev.item_id or 'noitem'}"
     print(
         "EBAY PLATFORM: parsed event_name=",
         ev.event_name,
@@ -293,7 +291,6 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
 
         if ev.event_name == "ItemRevised":
             if ev.quantity is None:
-                print("EBAY PLATFORM: ItemRevised missing Quantity; ignoring.")
                 existing.applied_inventory = True
                 db.commit()
                 return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_missing_quantity"}
@@ -308,7 +305,6 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
 
         elif ev.event_name == "FixedPriceTransaction":
             if ev.quantity_purchased is None:
-                print("EBAY PLATFORM: FixedPriceTransaction missing QuantityPurchased; ignoring.")
                 existing.applied_inventory = True
                 db.commit()
                 return {
@@ -326,12 +322,10 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
             )
 
         else:
-            print("EBAY PLATFORM: unhandled event type; ignoring:", ev.event_name)
             existing.applied_inventory = True
             db.commit()
             return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_unhandled_event"}
 
-        # Push DB -> Square (exact stock)
         square_status = "skipped"
         try:
             await square_service.set_stock_exact(
@@ -360,7 +354,7 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
 @app.post("/webhooks/ebay/platform/kdfos45rfs")
 async def ebay_platform_webhook(request: Request):
     raw = await request.body()
-    result = await _process_ebay_platform_event(raw)  # inline for debugging
+    result = await _process_ebay_platform_event(raw)
     return {"ok": True, "processed": result}
 
 
@@ -385,15 +379,16 @@ async def square_webhook(
     if not event_id:
         raise HTTPException(status_code=400, detail="Missing event_id")
 
-    # 1) payment flow -> order decrement
+    # payment flow -> order decrement
     order_id, status = extract_payment_order_id_and_status(payload)
     if order_id and (status or "").upper() == "COMPLETED":
-        return await _process_square_paid(str(event_id), str(event_type), str(order_id))
+        res = await _process_square_paid(str(event_id), str(event_type), str(order_id))
+        return {"ok": True, "processed": res}
 
-    # 2) inventory flow -> set counts
+    # inventory flow -> set counts
     changes = extract_inventory_change(payload)
     if changes:
-        return await _process_square_inventory(str(event_id), str(event_type), changes)
+        res = await _process_square_inventory(str(event_id), str(event_type), changes)
+        return {"ok": True, "processed": res}
 
-    # Otherwise ignore (but ack)
     return {"ok": True}

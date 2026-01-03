@@ -53,18 +53,30 @@ class SquareService:
         async with httpx.AsyncClient(timeout=60) as http:
             r = await http.post(url, headers=self.client._headers("application/json"), json=payload)
             if r.status_code >= 400:
-                # if this fails, fall back to assuming 0 so listing still succeeds
                 return 0
             data = r.json()
             counts = data.get("counts") or []
             if not counts:
                 return 0
-            # quantity is a string
             q = counts[0].get("quantity") or "0"
             try:
                 return int(q)
             except Exception:
                 return 0
+
+    async def set_stock_exact(self, *, variation_id: str, new_quantity: int) -> None:
+        """
+        Force Square IN_STOCK quantity to exactly new_quantity.
+        Uses PHYSICAL_COUNT (absolute set).
+        """
+        occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        await self.client.batch_set_inventory_physical_count_in_stock(
+            variation_id=str(variation_id),
+            location_id=self.location_id,
+            quantity=int(new_quantity),
+            occurred_at=occurred_at,
+            idempotency_key=str(uuid.uuid4()),
+        )
 
     async def upsert_item_with_images_and_inventory(
         self,
@@ -142,21 +154,12 @@ class SquareService:
             if img_res.get("image_id"):
                 image_ids.append(img_res["image_id"])
 
-        # Inventory: adjust delta into IN_STOCK
+        # Inventory: set absolute IN_STOCK to target
         current = await self._get_current_in_stock(variation_id=real_var_id)
         target = int(quantity)
-        delta = target - current
 
-        occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        if delta != 0:
-            inv_idem = str(uuid.uuid4())
-            await self.client.batch_adjust_inventory_in_stock(
-                variation_id=real_var_id,
-                location_id=self.location_id,
-                delta_quantity=delta,
-                occurred_at=occurred_at,
-                idempotency_key=inv_idem,
-            )
+        if current != target:
+            await self.set_stock_exact(variation_id=real_var_id, new_quantity=target)
 
         return {
             "square_item_id": real_item_id,
@@ -165,5 +168,5 @@ class SquareService:
             "square_reporting_category": reporting_category or "",
             "square_inventory_current": current,
             "square_inventory_target": target,
-            "square_inventory_delta": delta,
+            "square_inventory_delta": target - current,
         }

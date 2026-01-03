@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timezone
+import uuid
 
 import httpx
 
@@ -34,6 +36,9 @@ class SquareClient:
             h["Content-Type"] = content_type
         return h
 
+    def _idempotency_key(self) -> str:
+        return str(uuid.uuid4())
+
     async def upsert_catalog_object(self, *, idempotency_key: str, catalog_object: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}/catalog/object"
         payload = {"idempotency_key": idempotency_key, "object": catalog_object}
@@ -48,10 +53,9 @@ class SquareClient:
         url = f"{self.base_url}/catalog/search"
         payload = {
             "object_types": ["CATEGORY"],
-            "query": {"text_query": {"keywords": [name]}},
-            "include_related_objects": False,
-            "limit": 50,
-        }
+            "query": {"text_query": {"keywords": [name]}}},
+        payload["include_related_objects"] = False
+        payload["limit"] = 50
 
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.post(url, headers=self._headers("application/json"), json=payload)
@@ -130,10 +134,26 @@ class SquareClient:
         idempotency_key: str,
     ) -> dict[str, Any]:
         """
-        Use ADJUSTMENT to move quantity into IN_STOCK.
-        This avoids the "Physical counts can only be done to the IN_STOCK state" failure mode.
+        Adjust inventory by delta. Handles both increases and decreases safely.
+
+        Positive delta: move NONE -> IN_STOCK
+        Negative delta: move IN_STOCK -> NONE
         """
+        delta = int(delta_quantity)
+        if delta == 0:
+            return {"ok": True, "delta": 0}
+
         url = f"{self.base_url}/inventory/changes/batch-create"
+
+        if delta > 0:
+            from_state = "NONE"
+            to_state = "IN_STOCK"
+            qty = str(delta)
+        else:
+            from_state = "IN_STOCK"
+            to_state = "NONE"
+            qty = str(abs(delta))
+
         payload = {
             "idempotency_key": idempotency_key,
             "changes": [
@@ -142,9 +162,9 @@ class SquareClient:
                     "adjustment": {
                         "catalog_object_id": variation_id,
                         "location_id": location_id,
-                        "from_state": "NONE",
-                        "to_state": "IN_STOCK",
-                        "quantity": str(int(delta_quantity)),
+                        "from_state": from_state,
+                        "to_state": to_state,
+                        "quantity": qty,
                         "occurred_at": occurred_at,
                     },
                 }
@@ -155,4 +175,48 @@ class SquareClient:
             r = await client.post(url, headers=self._headers("application/json"), json=payload)
             if r.status_code >= 400:
                 raise RuntimeError(f"Square batch_adjust_inventory failed: HTTP {r.status_code}: {r.text}")
+            return r.json()
+
+    async def batch_set_inventory_physical_count_in_stock(
+        self,
+        *,
+        variation_id: str,
+        location_id: str,
+        quantity: int,
+        occurred_at: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Set an absolute IN_STOCK quantity using PHYSICAL_COUNT.
+        This is the most reliable way to force Square stock to match DB.
+        """
+        url = f"{self.base_url}/inventory/changes/batch-create"
+
+        if not occurred_at:
+            occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        if not idempotency_key:
+            idempotency_key = self._idempotency_key()
+
+        payload = {
+            "idempotency_key": idempotency_key,
+            "changes": [
+                {
+                    "type": "PHYSICAL_COUNT",
+                    "physical_count": {
+                        "catalog_object_id": str(variation_id),
+                        "location_id": str(location_id),
+                        "quantity": str(max(int(quantity), 0)),
+                        "state": "IN_STOCK",
+                        "occurred_at": occurred_at,
+                    },
+                }
+            ],
+        }
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(url, headers=self._headers("application/json"), json=payload)
+            if r.status_code >= 400:
+                raise RuntimeError(
+                    f"Square batch_set_inventory_physical_count_in_stock failed: HTTP {r.status_code}: {r.text}"
+                )
             return r.json()
