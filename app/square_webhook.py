@@ -265,7 +265,8 @@ async def apply_square_order_and_sync_ebay(
     if offer_id_to_qty:
         try:
             await _ebay_bulk_update_quantity(offer_id_to_qty)
-        except Exception:
+        except Exception as e:
+            print("EBAY SYNC FAILED:", repr(e))
             ebay_synced = False
 
     event.ebay_synced = ebay_synced
@@ -338,9 +339,9 @@ async def apply_square_inventory_change_and_sync_ebay(
     if offer_id_to_qty:
         try:
             await _ebay_bulk_update_quantity(offer_id_to_qty)
-        except Exception:
+        except Exception as e:
+            print("EBAY SYNC FAILED:", repr(e))
             ebay_synced = False
-
     event.ebay_synced = ebay_synced
     db.commit()
 

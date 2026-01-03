@@ -239,24 +239,23 @@ async def square_webhook(
     event_id = payload.get("event_id") or payload.get("eventId") or payload.get("id")
     event_type = payload.get("type") or payload.get("event_type") or ""
 
+    print("square webhook type:", event_type, "event_id:", event_id)
+    print("inventory changes:", extract_inventory_change(payload))
+
+
     if not event_id:
         raise HTTPException(status_code=400, detail="Missing event_id")
 
     # 1) payment flow -> order decrement
     order_id, status = extract_payment_order_id_and_status(payload)
+    # payment flow
     if order_id and (status or "").upper() == "COMPLETED":
-        # during testing, run inline:
         return await _process_square_paid(str(event_id), str(event_type), str(order_id))
-        # later you can switch back to:
-        # background_tasks.add_task(_process_square_paid, str(event_id), str(event_type), str(order_id))
-        # return {"ok": True}
 
-    # 2) inventory flow -> set counts
+    # inventory flow
     changes = extract_inventory_change(payload)
     if changes:
         return await _process_square_inventory(str(event_id), str(event_type), changes)
-        # later switch back to:
-        # background_tasks.add_task(_process_square_inventory, str(event_id), str(event_type), changes)
         # return {"ok": True}
 
     # Otherwise ignore (but ack)
