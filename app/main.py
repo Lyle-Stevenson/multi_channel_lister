@@ -245,14 +245,19 @@ async def square_webhook(
     # 1) payment flow -> order decrement
     order_id, status = extract_payment_order_id_and_status(payload)
     if order_id and (status or "").upper() == "COMPLETED":
-        background_tasks.add_task(_process_square_paid, str(event_id), str(event_type), str(order_id))
-        return {"ok": True}
+        # during testing, run inline:
+        return await _process_square_paid(str(event_id), str(event_type), str(order_id))
+        # later you can switch back to:
+        # background_tasks.add_task(_process_square_paid, str(event_id), str(event_type), str(order_id))
+        # return {"ok": True}
 
     # 2) inventory flow -> set counts
     changes = extract_inventory_change(payload)
     if changes:
-        background_tasks.add_task(_process_square_inventory, str(event_id), str(event_type), changes)
-        return {"ok": True}
+        return await _process_square_inventory(str(event_id), str(event_type), changes)
+        # later switch back to:
+        # background_tasks.add_task(_process_square_inventory, str(event_id), str(event_type), changes)
+        # return {"ok": True}
 
     # Otherwise ignore (but ack)
     return {"ok": True}

@@ -158,8 +158,8 @@ async def _ebay_get_access_token() -> str:
     return access_token
 
 
-async def _ebay_bulk_update_quantity(offer_id_to_qty: dict[str, int]) -> dict[str, Any]:
-    if not offer_id_to_qty:
+async def _ebay_bulk_update_quantity(items: list[dict[str, Any]]) -> dict[str, Any]:
+    if not items:
         return {"responses": []}
 
     url = f"{EBAY_BASE}/sell/inventory/v1/bulk_update_price_quantity"
@@ -171,7 +171,16 @@ async def _ebay_bulk_update_quantity(offer_id_to_qty: dict[str, int]) -> dict[st
         "Content-Language": "en-GB",
     }
 
-    payload = {"requests": [{"offerId": str(offer_id), "availableQuantity": int(qty)} for offer_id, qty in offer_id_to_qty.items()]}
+    payload = {
+        "requests": [
+            {
+                "sku": it["sku"],
+                "shipToLocationAvailability": {"quantity": int(it["qty"])},
+                "offers": [{"offerId": it["offer_id"], "availableQuantity": int(it["qty"])}],
+            }
+            for it in items
+        ]
+    }
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.post(url, headers=headers, json=payload)
@@ -180,15 +189,15 @@ async def _ebay_bulk_update_quantity(offer_id_to_qty: dict[str, int]) -> dict[st
         return r.json()
 
 
-def _sync_all_ebay_offers_from_db(*, db: Session) -> dict[str, int]:
-    offer_id_to_qty: dict[str, int] = {}
+def _sync_all_ebay_offers_from_db(*, db: Session) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     for pm in db.execute(select(ProductMap)).scalars().all():
         if not pm.ebay_offer_id:
             continue
         inv = db.get(Inventory, pm.sku)
         qty = int(inv.on_hand) if inv else 0
-        offer_id_to_qty[str(pm.ebay_offer_id)] = qty
-    return offer_id_to_qty
+        rows.append({"sku": pm.sku, "offer_id": str(pm.ebay_offer_id), "qty": qty})
+    return rows
 
 
 async def apply_square_order_and_sync_ebay(
