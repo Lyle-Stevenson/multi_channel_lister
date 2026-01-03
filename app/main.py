@@ -30,6 +30,14 @@ from app.square_webhook import (
     apply_square_inventory_change_and_sync_ebay,
 )
 
+from app.ebay_platform_webhook import (
+    parse_ebay_platform_notification,
+    _lookup_product_map,
+    apply_ebay_item_revised_and_sync_square,
+    apply_ebay_fixed_price_txn_and_sync_square,
+)
+from app.models import WebhookEvent
+
 app = FastAPI(title="Multi-Channel Lister (Square + eBay UK)")
 
 
@@ -122,6 +130,71 @@ def _normalize_condition(condition_raw: str) -> str:
 @app.get("/health")
 def health():
     return {"ok": True}
+
+async def _process_ebay_platform_event(raw_body: bytes) -> None:
+    ev = parse_ebay_platform_notification(raw_body)
+
+    # Use CorrelationID as idempotency key (it is present in standard notification bodies) :contentReference[oaicite:5]{index=5}
+    event_id = ev.correlation_id or f"ebay:{ev.event_name}:{ev.item_id or 'noitem'}"
+
+    with SessionLocal() as db:
+        existing = db.get(WebhookEvent, event_id)
+        if existing and existing.applied_inventory:
+            return
+
+        if not existing:
+            existing = WebhookEvent(event_id=event_id, provider="ebay_platform", event_type=ev.event_name, order_id=None)
+            db.add(existing)
+            db.commit()
+
+        pm = _lookup_product_map(db, sku=ev.sku, item_id=ev.item_id)
+        if not pm or not pm.square_variation_id:
+            existing.applied_inventory = True
+            db.commit()
+            return
+
+        updated = None
+
+        if ev.event_name == "ItemRevised":
+            # Must have Quantity; QuantitySold may be missing (treat missing as 0)
+            if ev.quantity is None:
+                existing.applied_inventory = True
+                db.commit()
+                return
+            updated = await apply_ebay_item_revised_and_sync_square(
+                db=db,
+                event_id=event_id,
+                pm=pm,
+                quantity=int(ev.quantity),
+                quantity_sold=int(ev.quantity_sold or 0),
+            )
+
+        elif ev.event_name == "FixedPriceTransaction":
+            if ev.quantity_purchased is None:
+                existing.applied_inventory = True
+                db.commit()
+                return
+            updated = await apply_ebay_fixed_price_txn_and_sync_square(
+                db=db,
+                event_id=event_id,
+                pm=pm,
+                qty_purchased=int(ev.quantity_purchased),
+            )
+
+        else:
+            existing.applied_inventory = True
+            db.commit()
+            return
+
+        # Push DB -> Square (exact stock)
+        # IMPORTANT: This must set Square variation stock to "after"
+        await square_service.set_stock_exact(
+            variation_id=updated["square_variation_id"],
+            new_quantity=updated["after"],
+        )
+
+        existing.applied_inventory = True
+        db.commit()
 
 
 @app.post("/listings/upsert")
@@ -222,6 +295,13 @@ async def _process_square_paid(event_id: str, event_type: str, order_id: str) ->
 async def _process_square_inventory(event_id: str, event_type: str, changes: list[dict]) -> None:
     with SessionLocal() as db:
         await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
+
+@app.post(f"/webhooks/ebay/platform/{settings.ebay_platform_webhook_secret}")
+async def ebay_platform_webhook(request: Request, background_tasks: BackgroundTasks):
+    raw = await request.body()
+    # eBay requires 200 OK and may stop sending if too many are unacknowledged :contentReference[oaicite:6]{index=6}
+    background_tasks.add_task(_process_ebay_platform_event, raw)
+    return {"ok": True}
 
 
 @app.post("/webhooks/square")
