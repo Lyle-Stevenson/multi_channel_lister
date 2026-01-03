@@ -20,6 +20,9 @@ EBAY_BASE = "https://api.ebay.com"
 # Simple in-process cache to avoid refreshing eBay token on every webhook burst
 _ebay_cached_token: dict[str, Any] | None = None
 
+# Window during which we treat Square inventory webhooks as "echo" of our own eBay->Square update
+ECHO_WINDOW = timedelta(minutes=5)
+
 
 def verify_square_signature(*, raw_body: bytes, signature: str | None) -> bool:
     """
@@ -68,8 +71,6 @@ def extract_inventory_change(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     Returns a list of changes like:
       [{"catalog_object_id": "VARIATION_ID", "quantity": 12, "state": "IN_STOCK"}]
-
-    Square payload shapes vary; this function is defensive.
     """
     obj = _safe_get(payload, "data", "object") or {}
     if not isinstance(obj, dict):
@@ -179,7 +180,6 @@ async def _ebay_bulk_update_quantity(items: list[dict[str, Any]]) -> dict[str, A
         "Content-Language": "en-GB",
     }
 
-    # Correct schema: requests[].offers[] and include inventory item quantity too. 
     payload = {
         "requests": [
             {
@@ -201,7 +201,7 @@ async def _ebay_bulk_update_quantity(items: list[dict[str, Any]]) -> dict[str, A
 
 def _sync_all_ebay_offers_from_db(*, db: Session) -> list[dict[str, Any]]:
     """
-    Build a full "sync everything" list from DB. Useful if a prior webhook applied inventory but didn't sync eBay.
+    Build a full "sync everything" list from DB.
     """
     items: list[dict[str, Any]] = []
     for pm in db.execute(select(ProductMap)).scalars().all():
@@ -255,6 +255,9 @@ async def apply_square_order_and_sync_ebay(
     decremented: list[dict[str, Any]] = []
     items_to_update: list[dict[str, Any]] = []
 
+    # IMPORTANT: This is Square-origin (a sale on Square). Mark as source="square".
+    now = datetime.now(timezone.utc)
+
     for var_id, qty_sold in sold_by_variation.items():
         pm = db.scalar(select(ProductMap).where(ProductMap.square_variation_id == var_id))
         if not pm:
@@ -267,7 +270,13 @@ async def apply_square_order_and_sync_ebay(
 
         before = int(inv.on_hand)
         after = max(before - int(qty_sold), 0)
+
+        if before == after:
+            continue
+
         inv.on_hand = after
+        inv.last_source = "square"
+        inv.last_source_at = now
 
         decremented.append({"sku": pm.sku, "sold": qty_sold, "before": before, "after": after})
 
@@ -305,8 +314,11 @@ async def apply_square_inventory_change_and_sync_ebay(
     changes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """
-    When Square inventory is manually changed, treat Square as source-of-truth and set DB on_hand to
-    the IN_STOCK quantity, then push that to eBay.
+    When Square inventory is changed, treat Square as source-of-truth and set DB on_hand to
+    IN_STOCK quantity, then push that to eBay.
+
+    BUT: If this Square webhook is just the echo of our own recent eBay->Square sync,
+    we ignore it (and clear the marker).
     """
     event = db.get(WebhookEvent, event_id)
     if not event:
@@ -325,6 +337,8 @@ async def apply_square_inventory_change_and_sync_ebay(
 
     updated: list[dict[str, Any]] = []
     items_to_update: list[dict[str, Any]] = []
+
+    now = datetime.now(timezone.utc)
 
     for ch in changes:
         if not isinstance(ch, dict):
@@ -350,7 +364,30 @@ async def apply_square_inventory_change_and_sync_ebay(
             db.add(inv)
 
         before = int(inv.on_hand)
-        inv.on_hand = max(qty, 0)
+        incoming = max(int(qty), 0)
+
+        # --- Option B echo guard ---
+        # If we recently set Square from an eBay event, Square will echo back the same count.
+        # When incoming equals DB count, we do nothing and clear marker.
+        if (
+            inv.last_source == "ebay"
+            and inv.last_source_at is not None
+            and (now - inv.last_source_at) <= ECHO_WINDOW
+            and before == incoming
+        ):
+            inv.last_source = None
+            inv.last_source_at = None
+            db.commit()
+            continue
+
+        # No-op guard (don’t spam eBay if nothing changed)
+        if before == incoming:
+            continue
+
+        inv.on_hand = incoming
+        inv.last_source = "square"
+        inv.last_source_at = now
+
         after = int(inv.on_hand)
 
         updated.append({"sku": pm.sku, "before": before, "after": after, "square_variation_id": var_id})

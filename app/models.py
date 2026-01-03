@@ -32,6 +32,11 @@ class Inventory(Base):
     sku: Mapped[str] = mapped_column(String(80), primary_key=True)
     on_hand: Mapped[int] = mapped_column(Integer, default=0)
 
+    # NEW: sync source markers to prevent ping-pong loops
+    # last_source: "ebay" or "square" (or None)
+    last_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    last_source_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

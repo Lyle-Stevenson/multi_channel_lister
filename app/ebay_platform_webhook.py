@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 import xml.etree.ElementTree as ET
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Inventory, ProductMap, WebhookEvent
+from app.models import Inventory, ProductMap
 
 
 def _local(tag: str) -> str:
@@ -22,12 +23,7 @@ def _find_first_text(root: ET.Element, path_locals: list[str]) -> Optional[str]:
     Find first matching element by walking all descendants and matching localnames in order.
     This is namespace-agnostic and works across eBay SOAP variants.
     """
-    # naive but robust for webhook payload sizes
-    def iter_children(e: ET.Element):
-        for c in list(e):
-            yield c
 
-    # depth-first match sequence
     nodes = [root]
     for wanted in path_locals:
         nxt: list[ET.Element] = []
@@ -39,7 +35,6 @@ def _find_first_text(root: ET.Element, path_locals: list[str]) -> Optional[str]:
             return None
         nodes = nxt
 
-    # return text of first final node with text
     for n in nodes:
         if n.text and n.text.strip():
             return n.text.strip()
@@ -71,17 +66,12 @@ class EbayPlatformEvent:
 def parse_ebay_platform_notification(xml_bytes: bytes) -> EbayPlatformEvent:
     root = ET.fromstring(xml_bytes)
 
-    # Common fields in many notification bodies (see eBay samples): NotificationEventName, CorrelationID, ItemID, SKU
     event_name = _find_any_text(root, "NotificationEventName") or "Unknown"
     correlation_id = _find_any_text(root, "CorrelationID") or ""
 
-    # ItemID often exists under Item/ItemID for GetItemResponse, and also in GetItemTransactionsResponse
     item_id = _find_any_text(root, "ItemID")
-
-    # SKU may be present in Item/SKU in some payloads
     sku = _find_any_text(root, "SKU")
 
-    # ItemRevised comes as GetItemResponse-like body with Quantity + SellingStatus/QuantitySold
     qty_txt = _find_any_text(root, "Quantity")
     qty_sold_txt = _find_any_text(root, "QuantitySold")
 
@@ -98,8 +88,7 @@ def parse_ebay_platform_notification(xml_bytes: bytes) -> EbayPlatformEvent:
         except Exception:
             quantity_sold = 0
 
-    # FixedPriceTransaction uses GetItemTransactions(ReturnAll) payload :contentReference[oaicite:3]{index=3}
-    # QuantityPurchased is under Transaction/QuantityPurchased (can be multiple transactions; we will sum)
+    # FixedPriceTransaction can include multiple QuantityPurchased entries; sum them
     purchased_total = 0
     found_purchase = False
     for el in root.iter():
@@ -137,10 +126,16 @@ def _lookup_product_map(db: Session, *, sku: str | None, item_id: str | None) ->
     return None
 
 
-async def apply_ebay_item_revised_and_sync_square(*, db: Session, event_id: str, pm: ProductMap, quantity: int, quantity_sold: int) -> dict:
+async def apply_ebay_item_revised_and_sync_square(
+    *,
+    db: Session,
+    event_id: str,
+    pm: ProductMap,
+    quantity: int,
+    quantity_sold: int,
+) -> dict:
     """
     Treat eBay manual edit as source-of-truth: available = Quantity - QuantitySold.
-    eBay returns QuantitySold in the SellingStatus for many notification bodies (GetItemResponse-style). :contentReference[oaicite:4]{index=4}
     """
     available = max(int(quantity) - int(quantity_sold), 0)
 
@@ -150,13 +145,30 @@ async def apply_ebay_item_revised_and_sync_square(*, db: Session, event_id: str,
         db.add(inv)
 
     before = int(inv.on_hand)
+
+    # No-op guard
+    if before == available:
+        # Still mark that this was an ebay-origin confirmation (helps clear Square echo later)
+        inv.last_source = "ebay"
+        inv.last_source_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"sku": pm.sku, "before": before, "after": available, "square_variation_id": pm.square_variation_id}
+
     inv.on_hand = available
+    inv.last_source = "ebay"
+    inv.last_source_at = datetime.now(timezone.utc)
     db.commit()
 
     return {"sku": pm.sku, "before": before, "after": available, "square_variation_id": pm.square_variation_id}
 
 
-async def apply_ebay_fixed_price_txn_and_sync_square(*, db: Session, event_id: str, pm: ProductMap, qty_purchased: int) -> dict:
+async def apply_ebay_fixed_price_txn_and_sync_square(
+    *,
+    db: Session,
+    event_id: str,
+    pm: ProductMap,
+    qty_purchased: int,
+) -> dict:
     inv = db.get(Inventory, pm.sku)
     if not inv:
         inv = Inventory(sku=pm.sku, on_hand=0)
@@ -164,7 +176,17 @@ async def apply_ebay_fixed_price_txn_and_sync_square(*, db: Session, event_id: s
 
     before = int(inv.on_hand)
     after = max(before - int(qty_purchased), 0)
+
+    # No-op guard
+    if before == after:
+        inv.last_source = "ebay"
+        inv.last_source_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"sku": pm.sku, "before": before, "after": after, "square_variation_id": pm.square_variation_id}
+
     inv.on_hand = after
+    inv.last_source = "ebay"
+    inv.last_source_at = datetime.now(timezone.utc)
     db.commit()
 
     return {"sku": pm.sku, "before": before, "after": after, "square_variation_id": pm.square_variation_id}

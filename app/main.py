@@ -352,10 +352,10 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
 
 
 @app.post("/webhooks/ebay/platform/kdfos45rfs")
-async def ebay_platform_webhook(request: Request):
+async def ebay_platform_webhook(request: Request, background_tasks: BackgroundTasks):
     raw = await request.body()
-    result = await _process_ebay_platform_event(raw)
-    return {"ok": True, "processed": result}
+    background_tasks.add_task(_process_ebay_platform_event, raw)
+    return {"ok": True}
 
 
 @app.post("/webhooks/square")
@@ -382,13 +382,12 @@ async def square_webhook(
     # payment flow -> order decrement
     order_id, status = extract_payment_order_id_and_status(payload)
     if order_id and (status or "").upper() == "COMPLETED":
-        res = await _process_square_paid(str(event_id), str(event_type), str(order_id))
-        return {"ok": True, "processed": res}
+        background_tasks.add_task(_process_square_paid, str(event_id), str(event_type), str(order_id))
+        return {"ok": True}
 
-    # inventory flow -> set counts
     changes = extract_inventory_change(payload)
     if changes:
-        res = await _process_square_inventory(str(event_id), str(event_type), changes)
-        return {"ok": True, "processed": res}
+        background_tasks.add_task(_process_square_inventory, str(event_id), str(event_type), changes)
+        return {"ok": True}
 
     return {"ok": True}
