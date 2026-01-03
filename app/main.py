@@ -237,6 +237,19 @@ async def _process_square_inventory(event_id: str, event_type: str, changes: lis
 async def _process_ebay_platform_event(raw_body: bytes) -> dict:
     print("EBAY PLATFORM: raw_len =", len(raw_body))
 
+    # DEBUG: log full XML payload (truncate to avoid insane log spam)
+    try:
+        xml_text = raw_body.decode("utf-8", errors="replace")
+    except Exception:
+        xml_text = repr(raw_body)
+
+    MAX = 30000  # adjust if you want more/less
+    if len(xml_text) > MAX:
+        print("EBAY PLATFORM XML (truncated):\n", xml_text[:MAX], "\n...TRUNCATED...")
+    else:
+        print("EBAY PLATFORM XML:\n", xml_text)
+
+
     try:
         ev = parse_ebay_platform_notification(raw_body)
     except Exception as e:
