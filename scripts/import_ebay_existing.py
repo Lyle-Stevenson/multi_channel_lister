@@ -167,6 +167,23 @@ def _find_money(root: ET.Element, tag_name: str) -> tuple[float | None, str | No
             return val, cur
     return None, None
 
+async def _offer_id_from_sku(ebay_client: EbayClient, sku: str) -> str | None:
+    token = await ebay_client.get_access_token()
+    url = f"{EBAY_API_BASE}/sell/inventory/v1/offer?sku={sku}"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(url, headers=headers)
+        if r.status_code >= 400:
+            return None
+        data = r.json()
+        offers = data.get("offers") or []
+        if not offers:
+            return None
+        oid = offers[0].get("offerId")
+        return str(oid) if oid else None
+
+
 async def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--max", type=int, default=0, help="0 = no limit")
@@ -249,23 +266,31 @@ async def main() -> int:
             offer_id = None
             inventory_sku = sku
 
+            mig = await ebay_client.bulk_migrate_listing([str(item_id)])
+
+            # Parse offerId if present (handles your “inventoryItems” shape)
             for resp in (mig.get("responses") or []):
                 if str(resp.get("listingId")) != str(item_id):
                     continue
-
-                # Shape A: top-level offerId
-                offer_id = resp.get("offerId") or (resp.get("offer") or {}).get("offerId")
-
-                # Shape B: inventoryItems[] (what you're seeing)
+                items = resp.get("inventoryItems") or []
+                if items and isinstance(items, list):
+                    # prefer matching SKU if present
+                    for it in items:
+                        if str(it.get("sku")) == str(sku) and it.get("offerId"):
+                            offer_id = str(it["offerId"])
+                            break
+                    if not offer_id and items[0].get("offerId"):
+                        offer_id = str(items[0]["offerId"])
                 if not offer_id:
-                    items = resp.get("inventoryItems") or []
-                    if items and isinstance(items, list):
-                        offer_id = items[0].get("offerId")
-
+                    offer_id = resp.get("offerId") or (resp.get("offer") or {}).get("offerId")
                 break
 
+            # If migrate didn’t yield offerId (e.g. 409), recover by looking up offer by SKU
             if not offer_id:
-                raise RuntimeError(f"bulk_migrate_listing did not return offerId for listing {item_id}: {mig}")
+                offer_id = await _offer_id_from_sku(ebay_client, sku)
+
+            if not offer_id:
+                raise RuntimeError(f"Could not obtain offerId for listing {item_id} sku={sku}")
 
 
             # 3) Download images to temp

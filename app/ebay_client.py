@@ -316,15 +316,26 @@ class EbayClient:
     # ---------- Inventory API (listing migration) ----------
 
     # inside EbayClient
-    async def bulk_migrate_listing(self, listing_ids: list[str]) -> dict:
-        token = await self.get_access_token()
-        url = "https://api.ebay.com/sell/inventory/v1/bulk_migrate_listing"
+    async def bulk_migrate_listing(self, listing_ids: list[str]) -> dict[str, Any]:
+        url = f"{EBAY_API_BASE}/sell/inventory/v1/bulk_migrate_listing"
         payload = {"requests": [{"listingId": str(i)} for i in listing_ids]}
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
+
         async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post(url, headers=headers, json=payload)
-            r.raise_for_status()
+            r = await client.post(
+                url,
+                headers=await self._headers(content_type="application/json", content_language="en-GB"),
+                json=payload,
+            )
+
+            # 409 usually means "already migrated" — return body so caller can recover.
+            if r.status_code == 409:
+                try:
+                    return r.json()
+                except Exception:
+                    return {"statusCode": 409, "body": r.text}
+
+            if r.status_code >= 400:
+                raise RuntimeError(f"eBay bulk_migrate_listing failed: HTTP {r.status_code}: {r.text}")
+
             return r.json()
+
