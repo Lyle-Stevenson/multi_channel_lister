@@ -309,3 +309,19 @@ class EbayClient:
             if r.status_code >= 400:
                 raise RuntimeError(f"eBay bulk_update_price_quantity failed: HTTP {r.status_code}: {r.text}")
             return r.json()
+
+    # ---------- Inventory API (listing migration) ----------
+
+# inside EbayClient
+async def bulk_migrate_listing(self, listing_ids: list[str]) -> dict:
+    token = await self.get_access_token()
+    url = "https://api.ebay.com/sell/inventory/v1/bulk_migrate_listing"
+    payload = {"requests": [{"listingId": str(i)} for i in listing_ids]}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=headers, json=payload)
+        r.raise_for_status()
+        return r.json()
