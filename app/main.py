@@ -8,8 +8,9 @@ from typing import Annotated
 
 from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import Base, engine, SessionLocal
@@ -102,6 +103,11 @@ def _safe_json_loads(text: str):
     except Exception:
         return None
 
+def _next_sku(db: Session) -> str:
+    n = db.execute(text("SELECT nextval('sku_seq')")).scalar_one()
+    return f"SKU{int(n):06d}"  # SKU000001, SKU000002...
+
+
 
 def _provider_error(provider: str, exc: Exception, status_code: int = 502):
     msg = str(exc)
@@ -149,11 +155,11 @@ def health():
 
 @app.post("/listings/upsert")
 async def listings_upsert(
-    sku: Annotated[str, Form()],
     title: Annotated[str, Form()],
     price_gbp: Annotated[float, Form()],
     quantity: Annotated[int, Form()],
     description: Annotated[str, Form()],
+    sku: Annotated[str | None, Form()] = None,
     square_reporting_category: Annotated[str | None, Form()] = None,
     ebay_category_id: Annotated[str, Form()] = "261055",
     ebay_condition: Annotated[str, Form()] = "NEW",
@@ -185,10 +191,13 @@ async def listings_upsert(
             temp_paths.append(p)
 
         with SessionLocal() as db:
+            final_sku = (sku or "").strip()
+            if not final_sku:
+                final_sku = _next_sku(db)
             try:
                 result = await multi_service.upsert_both(
                     db=db,
-                    sku=sku.strip(),
+                    sku=final_sku,
                     title=title.strip(),
                     price_gbp=float(price_gbp),
                     quantity=int(quantity),

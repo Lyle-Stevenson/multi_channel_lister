@@ -55,7 +55,6 @@ def parse_specifics(pairs: list[str]) -> dict[str, str]:
 def main() -> int:
     p = argparse.ArgumentParser(description="List/Update on Square + eBay UK in one call (shared inventory).")
     p.add_argument("--api", default="http://localhost:8000")
-    p.add_argument("--sku", required=True)
     p.add_argument("--title", required=True)
     p.add_argument("--price", required=True, type=float)
     p.add_argument("--qty", required=True, type=int)
