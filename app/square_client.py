@@ -43,6 +43,21 @@ class SquareClient:
                 raise RuntimeError(f"Square upsert failed: HTTP {r.status_code}: {r.text}")
             return r.json()
 
+    async def delete_catalog_object(self, *, object_id: str) -> dict[str, Any]:
+        """
+        Deletes a CatalogObject (e.g., ITEM). Deleting an ITEM deletes its variations too.
+        """
+        oid = (object_id or "").strip()
+        if not oid:
+            raise ValueError("object_id is required")
+
+        url = f"{self.base_url}/catalog/object/{oid}"
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.delete(url, headers=self._headers("application/json"))
+            if r.status_code >= 400:
+                raise RuntimeError(f"Square delete failed: HTTP {r.status_code}: {r.text}")
+            return r.json()
+
     async def search_catalog_categories_by_name(self, *, name: str) -> list[dict[str, Any]]:
         url = f"{self.base_url}/catalog/search"
         payload = {
@@ -112,14 +127,11 @@ class SquareClient:
             r = await client.post(url, headers=self._headers(), files=files)
             if r.status_code >= 400:
                 raise RuntimeError(f"Square create image failed: HTTP {r.status_code}: {r.text}")
+
             data = r.json()
             img = data.get("image") or {}
             return {"image_id": img.get("id"), "raw": data}
-
-    # -----------------------------
-    # Inventory (IMPORTANT FIX HERE)
-    # -----------------------------
-
+        
     async def batch_adjust_inventory(
         self,
         *,
@@ -132,18 +144,9 @@ class SquareClient:
         idempotency_key: str,
     ) -> dict[str, Any]:
         """
-        Create an ADJUSTMENT change.
-
-        IMPORTANT:
-        - quantity MUST be positive
-        - use different state transitions depending on direction:
-            increase: NONE -> IN_STOCK
-            decrease: IN_STOCK -> SOLD (or WASTE)
+        Generic ADJUSTMENT inventory change. Use this when you need to move quantity
+        between states (e.g. NONE->IN_STOCK to add, IN_STOCK->SOLD to remove).
         """
-        q = int(quantity)
-        if q <= 0:
-            raise ValueError("batch_adjust_inventory requires a positive quantity")
-
         url = f"{self.base_url}/inventory/changes/batch-create"
         payload = {
             "idempotency_key": idempotency_key,
@@ -155,7 +158,43 @@ class SquareClient:
                         "location_id": location_id,
                         "from_state": str(from_state),
                         "to_state": str(to_state),
-                        "quantity": str(q),
+                        "quantity": str(int(quantity)),
+                        "occurred_at": occurred_at,
+                    },
+                }
+            ],
+        }
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(url, headers=self._headers("application/json"), json=payload)
+            if r.status_code >= 400:
+                raise RuntimeError(f"Square batch_adjust_inventory failed: HTTP {r.status_code}: {r.text}")
+            return r.json()
+
+    async def batch_adjust_inventory_in_stock(
+        self,
+        *,
+        variation_id: str,
+        location_id: str,
+        delta_quantity: int,
+        occurred_at: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """
+        Use ADJUSTMENT to move quantity into IN_STOCK.
+        """
+        url = f"{self.base_url}/inventory/changes/batch-create"
+        payload = {
+            "idempotency_key": idempotency_key,
+            "changes": [
+                {
+                    "type": "ADJUSTMENT",
+                    "adjustment": {
+                        "catalog_object_id": variation_id,
+                        "location_id": location_id,
+                        "from_state": "NONE",
+                        "to_state": "IN_STOCK",
+                        "quantity": str(int(delta_quantity)),
                         "occurred_at": occurred_at,
                     },
                 }

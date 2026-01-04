@@ -8,8 +8,9 @@ from typing import Annotated
 
 from fastapi import BackgroundTasks, FastAPI, UploadFile, File, Form, HTTPException, Request, Header
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import Base, engine, SessionLocal
@@ -102,6 +103,11 @@ def _safe_json_loads(text: str):
     except Exception:
         return None
 
+def _next_sku(db: Session) -> str:
+    n = db.execute(text("SELECT nextval('sku_seq')")).scalar_one()
+    return f"SKU{int(n):06d}"  # SKU000001, SKU000002...
+
+
 
 def _provider_error(provider: str, exc: Exception, status_code: int = 502):
     msg = str(exc)
@@ -149,11 +155,11 @@ def health():
 
 @app.post("/listings/upsert")
 async def listings_upsert(
-    sku: Annotated[str, Form()],
     title: Annotated[str, Form()],
     price_gbp: Annotated[float, Form()],
     quantity: Annotated[int, Form()],
     description: Annotated[str, Form()],
+    sku: Annotated[str | None, Form()] = None,
     square_reporting_category: Annotated[str | None, Form()] = None,
     ebay_category_id: Annotated[str, Form()] = "261055",
     ebay_condition: Annotated[str, Form()] = "NEW",
@@ -185,10 +191,13 @@ async def listings_upsert(
             temp_paths.append(p)
 
         with SessionLocal() as db:
+            final_sku = (sku or "").strip()
+            if not final_sku:
+                final_sku = _next_sku(db)
             try:
                 result = await multi_service.upsert_both(
                     db=db,
-                    sku=sku.strip(),
+                    sku=final_sku,
                     title=title.strip(),
                     price_gbp=float(price_gbp),
                     quantity=int(quantity),
@@ -247,29 +256,72 @@ async def _process_square_inventory(event_id: str, event_type: str, changes: lis
         return await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
 
 
-async def _get_ebay_offer_truth_qty_with_retries(*, offer_id: str, current_db_qty: int | None) -> int | None:
+async def _get_ebay_truth_qty_with_retries(*, offer_id: str, sku: str | None, current_db_qty: int | None) -> int | None:
     """
     eBay can be eventually consistent right after a revise.
-    We retry a few times; we accept immediately if it differs from current_db_qty.
+    We check BOTH:
+      - Offer.availableQuantity
+      - InventoryItem.availability.shipToLocationAvailability.quantity
+
+    If they disagree, use current_db_qty to pick the one that represents a change.
     """
-    delays = [0.0, 1.0, 2.0]  # seconds
+    delays = [0.0, 1.0, 2.0, 5.0]
     last: int | None = None
+
+    def _choose_truth(offer_qty: int | None, item_qty: int | None, db_qty: int | None) -> int | None:
+        if offer_qty is None and item_qty is None:
+            return None
+        if offer_qty is None:
+            return item_qty
+        if item_qty is None:
+            return offer_qty
+
+        # Agree => done
+        if offer_qty == item_qty:
+            return offer_qty
+
+        # Disagree: if DB known, pick the value that indicates a change vs DB.
+        if db_qty is not None:
+            if item_qty == db_qty and offer_qty != db_qty:
+                return offer_qty
+            if offer_qty == db_qty and item_qty != db_qty:
+                return item_qty
+
+        # If still ambiguous, choose the safer lower value to reduce oversell risk.
+        return min(offer_qty, item_qty)
 
     for d in delays:
         if d > 0:
             await asyncio.sleep(d)
+
+        offer_qty: int | None = None
+        item_qty: int | None = None
+
         try:
-            qty = await ebay_service.get_offer_available_quantity(str(offer_id))
-            last = int(qty)
-            print("EBAY PLATFORM: offer truth availableQuantity =", last)
-            if current_db_qty is None or last != int(current_db_qty):
-                return last
+            offer_qty = int(await ebay_service.get_offer_available_quantity(str(offer_id)))
         except Exception as e:
             print("EBAY PLATFORM: get_offer_available_quantity FAILED:", repr(e))
-            # keep retrying
+
+        if sku:
+            try:
+                item_qty = int(await ebay_service.get_inventory_item_available_quantity(str(sku)))
+            except Exception as e:
+                print("EBAY PLATFORM: get_inventory_item_available_quantity FAILED:", repr(e))
+
+        truth = _choose_truth(offer_qty, item_qty, current_db_qty)
+        if truth is None:
             continue
 
+        last = int(truth)
+        print("EBAY PLATFORM: truth offer=", offer_qty, "inventory_item=", item_qty, "db=", current_db_qty, "=>", last)
+
+        # Return as soon as we see a value that differs from DB (a real change)
+        if current_db_qty is None or last != int(current_db_qty):
+            return last
+
     return last
+
+
 
 
 # -------------------------
@@ -339,16 +391,57 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
         updated: dict | None = None
         square_status = "skipped"
 
+        # --- NEW: Listing closed on eBay => delete in Square + delete DB rows
+        if ev.event_name == "ItemClosed":
+            # Defensive: if we don't have square_item_id, we can still delete DB.
+            square_deleted = False
+            try:
+                if pm.square_item_id:
+                    await square_service.delete_catalog_item(item_id=str(pm.square_item_id))
+                    square_deleted = True
+            except Exception as e:
+                print("EBAY PLATFORM: Square delete failed:", repr(e))
+                # Do NOT delete DB if Square delete failed; safer.
+                existing.applied_inventory = True
+                db.commit()
+                return {
+                    "event": ev.event_name,
+                    "event_id": event_id,
+                    "sku": pm.sku,
+                    "action": "delete_failed_square",
+                    "square_deleted": False,
+                }
+
+            # Delete DB rows (hard delete)
+            inv = db.get(Inventory, pm.sku)
+            if inv:
+                db.delete(inv)
+            db.delete(pm)
+
+            existing.applied_inventory = True
+            db.commit()
+
+            print("EBAY PLATFORM: deleted sku from Square+DB:", pm.sku)
+            return {
+                "event": ev.event_name,
+                "event_id": event_id,
+                "sku": pm.sku,
+                "action": "deleted",
+                "square_deleted": square_deleted,
+            }
+
         if ev.event_name == "ItemRevised":
             # 1) Prefer authoritative truth from offer (with retries)
             truth_qty: int | None = None
             current_db_qty = int(inv.on_hand) if inv else None
 
             if pm.ebay_offer_id:
-                truth_qty = await _get_ebay_offer_truth_qty_with_retries(
-                    offer_id=str(pm.ebay_offer_id),
-                    current_db_qty=current_db_qty,
-                )
+                truth_qty = await _get_ebay_truth_qty_with_retries(
+                offer_id=str(pm.ebay_offer_id),
+                sku=pm.ebay_inventory_sku or pm.sku,
+                current_db_qty=current_db_qty,
+            )
+
 
             # 2) Fallback to SOAP available if truth couldn't be fetched
             if truth_qty is None:

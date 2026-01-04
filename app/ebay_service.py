@@ -101,3 +101,12 @@ class EbayService:
         """
         data = await self.client.get_offer(str(offer_id))
         return _to_int(data.get("availableQuantity"), default=0)
+    
+    async def get_inventory_item_available_quantity(self, sku: str) -> int:
+        """
+        UI edits often show up here first:
+          inventory_item.availability.shipToLocationAvailability.quantity
+        """
+        data = await self.client.get_inventory_item(str(sku))
+        avail = (data.get("availability") or {}).get("shipToLocationAvailability") or {}
+        return _to_int(avail.get("quantity"), default=0)

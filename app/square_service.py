@@ -39,6 +39,12 @@ class SquareService:
         self.client = client
         self.location_id = location_id
 
+    async def delete_catalog_item(self, *, item_id: str) -> dict[str, Any]:
+        """
+        Deletes the Square ITEM. Variations are deleted automatically with the item.
+        """
+        return await self.client.delete_catalog_object(object_id=item_id)
+
     async def _get_current_in_stock(self, *, variation_id: str) -> int:
         url = f"{self.client.base_url}/inventory/counts/batch-retrieve"
         payload = {
