@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -12,7 +13,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.db import Base, engine, SessionLocal
-from app.models import ProductMap, Inventory
+from app.models import ProductMap, Inventory, WebhookEvent
 
 from app.square_client import SquareClient
 from app.square_service import SquareService
@@ -30,7 +31,29 @@ from app.square_webhook import (
     apply_square_inventory_change_and_sync_ebay,
 )
 
+from app.ebay_platform_webhook import (
+    parse_ebay_platform_notification,
+    _lookup_product_map,
+    apply_ebay_item_revised_and_sync_square,
+    apply_ebay_fixed_price_txn_and_sync_square,
+)
+
 app = FastAPI(title="Multi-Channel Lister (Square + eBay UK)")
+
+ECHO_WINDOW = timedelta(minutes=5)
+STALE_TOLERANCE = timedelta(seconds=3)  # allow tiny clock differences
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_aware_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 async def _wait_for_db_and_init(max_attempts: int = 30) -> None:
@@ -214,14 +237,198 @@ def list_products():
         ]
 
 
-async def _process_square_paid(event_id: str, event_type: str, order_id: str) -> None:
+async def _process_square_paid(event_id: str, event_type: str, order_id: str) -> dict:
     with SessionLocal() as db:
-        await apply_square_order_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, order_id=order_id)
+        return await apply_square_order_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, order_id=order_id)
 
 
-async def _process_square_inventory(event_id: str, event_type: str, changes: list[dict]) -> None:
+async def _process_square_inventory(event_id: str, event_type: str, changes: list[dict]) -> dict:
     with SessionLocal() as db:
-        await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
+        return await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
+
+
+async def _get_ebay_offer_truth_qty_with_retries(*, offer_id: str, current_db_qty: int | None) -> int | None:
+    """
+    eBay can be eventually consistent right after a revise.
+    We retry a few times; we accept immediately if it differs from current_db_qty.
+    """
+    delays = [0.0, 1.0, 2.0]  # seconds
+    last: int | None = None
+
+    for d in delays:
+        if d > 0:
+            await asyncio.sleep(d)
+        try:
+            qty = await ebay_service.get_offer_available_quantity(str(offer_id))
+            last = int(qty)
+            print("EBAY PLATFORM: offer truth availableQuantity =", last)
+            if current_db_qty is None or last != int(current_db_qty):
+                return last
+        except Exception as e:
+            print("EBAY PLATFORM: get_offer_available_quantity FAILED:", repr(e))
+            # keep retrying
+            continue
+
+    return last
+
+
+# -------------------------
+# eBay Platform Notifications
+# -------------------------
+async def _process_ebay_platform_event(raw_body: bytes) -> dict:
+    print("EBAY PLATFORM: raw_len =", len(raw_body))
+
+    try:
+        ev = parse_ebay_platform_notification(raw_body)
+    except Exception as e:
+        print("EBAY PLATFORM: parse FAILED:", repr(e))
+        return {"action": "parse_failed", "error": repr(e)}
+
+    event_id = ev.correlation_id or f"ebay_platform:{ev.event_name}:{ev.sku or 'nosku'}:{ev.item_id or 'noitem'}"
+    print(
+        "EBAY PLATFORM: parsed event_name=",
+        ev.event_name,
+        "correlation_id=",
+        ev.correlation_id,
+        "event_id=",
+        event_id,
+        "sku=",
+        ev.sku,
+        "item_id=",
+        ev.item_id,
+        "qty=",
+        ev.quantity,
+        "qty_sold=",
+        ev.quantity_sold,
+        "qty_purchased=",
+        ev.quantity_purchased,
+        "event_time=",
+        ev.event_time,
+    )
+
+    with SessionLocal() as db:
+        existing = db.get(WebhookEvent, event_id)
+        if existing and existing.applied_inventory:
+            print("EBAY PLATFORM: duplicate event; already applied:", event_id)
+            return {"event": ev.event_name, "event_id": event_id, "action": "duplicate_ignored"}
+
+        if not existing:
+            existing = WebhookEvent(event_id=event_id, provider="ebay_platform", event_type=ev.event_name, order_id=None)
+            db.add(existing)
+            db.commit()
+
+        pm = _lookup_product_map(db, sku=ev.sku, item_id=ev.item_id)
+        if not pm or not pm.square_variation_id:
+            print("EBAY PLATFORM: no mapping found (sku/item_id):", ev.sku, ev.item_id)
+            existing.applied_inventory = True
+            db.commit()
+            return {"event": ev.event_name, "event_id": event_id, "sku": ev.sku, "action": "ignored_no_mapping"}
+
+        inv = db.get(Inventory, pm.sku)
+        now = utcnow()
+        inv_last_at = _as_aware_utc(inv.last_source_at) if inv else None
+
+        # ---- Stale / out-of-order guard using event timestamp (if present)
+        ev_time = _as_aware_utc(ev.event_time)
+        if inv_last_at is not None and ev_time is not None and ev_time < (inv_last_at - STALE_TOLERANCE):
+            print("EBAY PLATFORM: stale/out-of-order event (by Timestamp); ignoring")
+            existing.applied_inventory = True
+            db.commit()
+            return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_stale"}
+
+        updated: dict | None = None
+        square_status = "skipped"
+
+        if ev.event_name == "ItemRevised":
+            # 1) Prefer authoritative truth from offer (with retries)
+            truth_qty: int | None = None
+            current_db_qty = int(inv.on_hand) if inv else None
+
+            if pm.ebay_offer_id:
+                truth_qty = await _get_ebay_offer_truth_qty_with_retries(
+                    offer_id=str(pm.ebay_offer_id),
+                    current_db_qty=current_db_qty,
+                )
+
+            # 2) Fallback to SOAP available if truth couldn't be fetched
+            if truth_qty is None:
+                if ev.quantity is None:
+                    existing.applied_inventory = True
+                    db.commit()
+                    return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_missing_quantity"}
+                truth_qty = max(int(ev.quantity) - int(ev.quantity_sold or 0), 0)
+
+            # ---- Echo guard: ignore eBay events caused by our Square->eBay sync
+            # Only ignore if:
+            #   - last source was square,
+            #   - within echo window,
+            #   - and the truth equals our DB.
+            if (
+                inv
+                and inv.last_source == "square"
+                and inv_last_at is not None
+                and (now - inv_last_at) <= ECHO_WINDOW
+                and int(inv.on_hand) == int(truth_qty)
+            ):
+                print("EBAY PLATFORM: echo from square detected; ignoring")
+                existing.applied_inventory = True
+                db.commit()
+                return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_echo"}
+
+            # We want DB = available quantity
+            updated = await apply_ebay_item_revised_and_sync_square(
+                db=db,
+                event_id=event_id,
+                pm=pm,
+                quantity=int(truth_qty),  # already available
+                quantity_sold=0,
+            )
+
+        elif ev.event_name == "FixedPriceTransaction":
+            if ev.quantity_purchased is None:
+                existing.applied_inventory = True
+                db.commit()
+                return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_missing_quantity_purchased"}
+
+            updated = await apply_ebay_fixed_price_txn_and_sync_square(
+                db=db,
+                event_id=event_id,
+                pm=pm,
+                qty_purchased=int(ev.quantity_purchased),
+            )
+
+        else:
+            existing.applied_inventory = True
+            db.commit()
+            return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "ignored_unhandled_event"}
+
+        # Only update Square if inventory actually changed
+        if updated["before"] == updated["after"]:
+            print("EBAY PLATFORM: no inventory change; skipping Square update")
+            square_status = "skipped"
+        else:
+            try:
+                await square_service.set_stock_exact(
+                    variation_id=updated["square_variation_id"],
+                    new_quantity=updated["after"],
+                )
+                square_status = "updated"
+            except Exception as e:
+                print("EBAY PLATFORM: Square set_stock_exact FAILED:", repr(e))
+                square_status = "failed"
+
+        existing.applied_inventory = True
+        db.commit()
+
+        print("EBAY PLATFORM: applied:", updated, "square:", square_status)
+        return {"event": ev.event_name, "event_id": event_id, "sku": pm.sku, "action": "applied", "updated": updated, "square": square_status}
+
+
+@app.post("/webhooks/ebay/platform/kdfos45rfs")
+async def ebay_platform_webhook(request: Request, background_tasks: BackgroundTasks):
+    raw = await request.body()
+    background_tasks.add_task(_process_ebay_platform_event, raw)
+    return {"ok": True}
 
 
 @app.post("/webhooks/square")
@@ -242,21 +449,17 @@ async def square_webhook(
     print("square webhook type:", event_type, "event_id:", event_id)
     print("inventory changes:", extract_inventory_change(payload))
 
-
     if not event_id:
         raise HTTPException(status_code=400, detail="Missing event_id")
 
-    # 1) payment flow -> order decrement
     order_id, status = extract_payment_order_id_and_status(payload)
-    # payment flow
     if order_id and (status or "").upper() == "COMPLETED":
-        return await _process_square_paid(str(event_id), str(event_type), str(order_id))
+        background_tasks.add_task(_process_square_paid, str(event_id), str(event_type), str(order_id))
+        return {"ok": True}
 
-    # inventory flow
     changes = extract_inventory_change(payload)
     if changes:
-        return await _process_square_inventory(str(event_id), str(event_type), changes)
-        # return {"ok": True}
+        background_tasks.add_task(_process_square_inventory, str(event_id), str(event_type), changes)
+        return {"ok": True}
 
-    # Otherwise ignore (but ack)
     return {"ok": True}

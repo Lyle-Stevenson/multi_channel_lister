@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     square_webhook_signature_key: str = Field(default="")
     square_webhook_notification_url: str = Field(default="")
 
+    # eBay Platform Notifications (Trading API SOAP)
+    ebay_platform_webhook_secret: str = Field(default="kdfos45rfs")
+    ebay_platform_webhook_url: str = Field(default="")
+
     # eBay
     ebay_client_id: str = Field(default="")
     ebay_client_secret: str = Field(default="")

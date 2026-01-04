@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-
 import httpx
 
 
@@ -89,9 +88,7 @@ class SquareClient:
 
         mime = _mime_for_path(image_path)
         if mime == "application/octet-stream":
-            raise RuntimeError(
-                f"Unsupported image type for Square: {image_path.name}. Use .jpg/.jpeg, .png, or .gif"
-            )
+            raise RuntimeError(f"Unsupported image type for Square: {image_path.name}. Use .jpg/.jpeg, .png, or .gif")
 
         image_obj = {
             "type": "IMAGE",
@@ -115,24 +112,38 @@ class SquareClient:
             r = await client.post(url, headers=self._headers(), files=files)
             if r.status_code >= 400:
                 raise RuntimeError(f"Square create image failed: HTTP {r.status_code}: {r.text}")
-
             data = r.json()
             img = data.get("image") or {}
             return {"image_id": img.get("id"), "raw": data}
 
-    async def batch_adjust_inventory_in_stock(
+    # -----------------------------
+    # Inventory (IMPORTANT FIX HERE)
+    # -----------------------------
+
+    async def batch_adjust_inventory(
         self,
         *,
         variation_id: str,
         location_id: str,
-        delta_quantity: int,
+        quantity: int,
+        from_state: str,
+        to_state: str,
         occurred_at: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
         """
-        Use ADJUSTMENT to move quantity into IN_STOCK.
-        This avoids the "Physical counts can only be done to the IN_STOCK state" failure mode.
+        Create an ADJUSTMENT change.
+
+        IMPORTANT:
+        - quantity MUST be positive
+        - use different state transitions depending on direction:
+            increase: NONE -> IN_STOCK
+            decrease: IN_STOCK -> SOLD (or WASTE)
         """
+        q = int(quantity)
+        if q <= 0:
+            raise ValueError("batch_adjust_inventory requires a positive quantity")
+
         url = f"{self.base_url}/inventory/changes/batch-create"
         payload = {
             "idempotency_key": idempotency_key,
@@ -142,9 +153,9 @@ class SquareClient:
                     "adjustment": {
                         "catalog_object_id": variation_id,
                         "location_id": location_id,
-                        "from_state": "NONE",
-                        "to_state": "IN_STOCK",
-                        "quantity": str(int(delta_quantity)),
+                        "from_state": str(from_state),
+                        "to_state": str(to_state),
+                        "quantity": str(q),
                         "occurred_at": occurred_at,
                     },
                 }

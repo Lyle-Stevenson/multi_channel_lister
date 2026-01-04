@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+
 from sqlalchemy import String, Integer, DateTime, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class ProductMap(Base):
@@ -22,8 +27,8 @@ class ProductMap(Base):
     ebay_offer_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     ebay_listing_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class Inventory(Base):
@@ -32,14 +37,19 @@ class Inventory(Base):
     sku: Mapped[str] = mapped_column(String(80), primary_key=True)
     on_hand: Mapped[int] = mapped_column(Integer, default=0)
 
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # NEW: sync marker to avoid webhook echo loops
+    # values: "square", "ebay" (you can extend)
+    last_source: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
+    last_source_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class WebhookEvent(Base):
     """
     Idempotency + retry support for incoming webhooks.
-    - applied_inventory: inventory decrement has been applied once
-    - ebay_synced: eBay quantity update succeeded
+    - applied_inventory: inventory change has been applied once
+    - ebay_synced: eBay quantity update succeeded (for Square webhooks)
     """
     __tablename__ = "webhook_event"
 
@@ -51,5 +61,5 @@ class WebhookEvent(Base):
     applied_inventory: Mapped[bool] = mapped_column(Boolean, default=False)
     ebay_synced: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

@@ -40,9 +40,6 @@ class SquareService:
         self.location_id = location_id
 
     async def _get_current_in_stock(self, *, variation_id: str) -> int:
-        """
-        Query current IN_STOCK quantity for variation/location.
-        """
         url = f"{self.client.base_url}/inventory/counts/batch-retrieve"
         payload = {
             "catalog_object_ids": [variation_id],
@@ -53,18 +50,59 @@ class SquareService:
         async with httpx.AsyncClient(timeout=60) as http:
             r = await http.post(url, headers=self.client._headers("application/json"), json=payload)
             if r.status_code >= 400:
-                # if this fails, fall back to assuming 0 so listing still succeeds
                 return 0
             data = r.json()
             counts = data.get("counts") or []
             if not counts:
                 return 0
-            # quantity is a string
             q = counts[0].get("quantity") or "0"
             try:
                 return int(q)
             except Exception:
                 return 0
+
+    async def set_stock_exact(self, *, variation_id: str, new_quantity: int) -> dict[str, Any]:
+        """
+        Set IN_STOCK to an exact value by adjusting the delta safely.
+
+        - If we need to increase: NONE -> IN_STOCK (qty = delta)
+        - If we need to decrease: IN_STOCK -> SOLD (qty = abs(delta))
+
+        This avoids the invalid negative-quantity adjustment you just hit.
+        """
+        target = max(int(new_quantity), 0)
+        current = await self._get_current_in_stock(variation_id=variation_id)
+        delta = target - current
+
+        if delta == 0:
+            return {"before": current, "after": target, "delta": 0, "method": "noop"}
+
+        occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        idem = str(uuid.uuid4())
+
+        if delta > 0:
+            await self.client.batch_adjust_inventory(
+                variation_id=variation_id,
+                location_id=self.location_id,
+                quantity=delta,
+                from_state="NONE",
+                to_state="IN_STOCK",
+                occurred_at=occurred_at,
+                idempotency_key=idem,
+            )
+            return {"before": current, "after": target, "delta": delta, "method": "adjust NONE->IN_STOCK"}
+
+        # delta < 0 : reduce
+        await self.client.batch_adjust_inventory(
+            variation_id=variation_id,
+            location_id=self.location_id,
+            quantity=abs(delta),
+            from_state="IN_STOCK",
+            to_state="SOLD",  # (or "WASTE" if you prefer)
+            occurred_at=occurred_at,
+            idempotency_key=idem,
+        )
+        return {"before": current, "after": target, "delta": delta, "method": "adjust IN_STOCK->SOLD"}
 
     async def upsert_item_with_images_and_inventory(
         self,
@@ -97,10 +135,7 @@ class SquareService:
                         "name": "Regular",
                         "sku": sku,
                         "pricing_type": "FIXED_PRICING",
-                        "price_money": {
-                            "amount": int(round(float(price_gbp) * 100)),
-                            "currency": "GBP",
-                        },
+                        "price_money": {"amount": int(round(float(price_gbp) * 100)), "currency": "GBP"},
                     },
                 }
             ],
@@ -110,11 +145,7 @@ class SquareService:
             item_data["reporting_category"] = {"id": cat_id}
 
         catalog_item = {"type": "ITEM", "id": client_item_id, "item_data": item_data}
-
-        upsert_res = await self.client.upsert_catalog_object(
-            idempotency_key=idem,
-            catalog_object=catalog_item,
-        )
+        upsert_res = await self.client.upsert_catalog_object(idempotency_key=idem, catalog_object=catalog_item)
 
         real_item_id = _mapping(upsert_res, client_item_id)
         real_var_id = _variation_id_from_catalog_object(upsert_res) or _mapping(upsert_res, client_var_id)
@@ -134,36 +165,21 @@ class SquareService:
         for idx, p in enumerate(image_paths):
             img_idem = str(uuid.uuid4())
             img_res = await self.client.create_catalog_image(
-                p,
-                object_id=real_item_id,
-                idempotency_key=img_idem,
-                is_primary=(idx == 0),
+                p, object_id=real_item_id, idempotency_key=img_idem, is_primary=(idx == 0)
             )
             if img_res.get("image_id"):
                 image_ids.append(img_res["image_id"])
 
-        # Inventory: adjust delta into IN_STOCK
-        current = await self._get_current_in_stock(variation_id=real_var_id)
-        target = int(quantity)
-        delta = target - current
-
-        occurred_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        if delta != 0:
-            inv_idem = str(uuid.uuid4())
-            await self.client.batch_adjust_inventory_in_stock(
-                variation_id=real_var_id,
-                location_id=self.location_id,
-                delta_quantity=delta,
-                occurred_at=occurred_at,
-                idempotency_key=inv_idem,
-            )
+        # Inventory (exact, works for both up + down)
+        inv_res = await self.set_stock_exact(variation_id=real_var_id, new_quantity=int(quantity))
 
         return {
             "square_item_id": real_item_id,
             "square_variation_id": real_var_id,
             "square_image_ids": image_ids,
             "square_reporting_category": reporting_category or "",
-            "square_inventory_current": current,
-            "square_inventory_target": target,
-            "square_inventory_delta": delta,
+            "square_inventory_before": inv_res.get("before"),
+            "square_inventory_after": inv_res.get("after"),
+            "square_inventory_delta": inv_res.get("delta"),
+            "square_inventory_method": inv_res.get("method"),
         }
