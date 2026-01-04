@@ -73,6 +73,9 @@ class EbayClient:
 
     _cached_token: EbayToken | None = None
 
+    async def get_access_token(self) -> str:
+        return await self._get_user_access_token()
+
     async def _get_user_access_token(self) -> str:
         now = datetime.now(timezone.utc)
         if self._cached_token and self._cached_token.expires_at > now + timedelta(minutes=2):
