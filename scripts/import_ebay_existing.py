@@ -248,13 +248,25 @@ async def main() -> int:
             # Expected shape: response per listing. We just hunt offerId.
             offer_id = None
             inventory_sku = sku
-            for resp in mig.get("responses", []) or []:
-                if str(resp.get("listingId")) == str(item_id):
-                    offer_id = resp.get("offerId") or resp.get("offer", {}).get("offerId")
-                    break
+
+            for resp in (mig.get("responses") or []):
+                if str(resp.get("listingId")) != str(item_id):
+                    continue
+
+                # Shape A: top-level offerId
+                offer_id = resp.get("offerId") or (resp.get("offer") or {}).get("offerId")
+
+                # Shape B: inventoryItems[] (what you're seeing)
+                if not offer_id:
+                    items = resp.get("inventoryItems") or []
+                    if items and isinstance(items, list):
+                        offer_id = items[0].get("offerId")
+
+                break
+
             if not offer_id:
-                # Some accounts return a different shape; keep it simple: fail loudly
                 raise RuntimeError(f"bulk_migrate_listing did not return offerId for listing {item_id}: {mig}")
+
 
             # 3) Download images to temp
             with tempfile.TemporaryDirectory() as td:
