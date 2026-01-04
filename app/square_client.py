@@ -131,6 +131,45 @@ class SquareClient:
             data = r.json()
             img = data.get("image") or {}
             return {"image_id": img.get("id"), "raw": data}
+        
+    async def batch_adjust_inventory(
+        self,
+        *,
+        variation_id: str,
+        location_id: str,
+        quantity: int,
+        from_state: str,
+        to_state: str,
+        occurred_at: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """
+        Generic ADJUSTMENT inventory change. Use this when you need to move quantity
+        between states (e.g. NONE->IN_STOCK to add, IN_STOCK->SOLD to remove).
+        """
+        url = f"{self.base_url}/inventory/changes/batch-create"
+        payload = {
+            "idempotency_key": idempotency_key,
+            "changes": [
+                {
+                    "type": "ADJUSTMENT",
+                    "adjustment": {
+                        "catalog_object_id": variation_id,
+                        "location_id": location_id,
+                        "from_state": str(from_state),
+                        "to_state": str(to_state),
+                        "quantity": str(int(quantity)),
+                        "occurred_at": occurred_at,
+                    },
+                }
+            ],
+        }
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(url, headers=self._headers("application/json"), json=payload)
+            if r.status_code >= 400:
+                raise RuntimeError(f"Square batch_adjust_inventory failed: HTTP {r.status_code}: {r.text}")
+            return r.json()
 
     async def batch_adjust_inventory_in_stock(
         self,
