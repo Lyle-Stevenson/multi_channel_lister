@@ -256,29 +256,48 @@ async def _process_square_inventory(event_id: str, event_type: str, changes: lis
         return await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
 
 
-async def _get_ebay_offer_truth_qty_with_retries(*, offer_id: str, current_db_qty: int | None) -> int | None:
+async def _get_ebay_truth_qty_with_retries(*, offer_id: str, sku: str | None, current_db_qty: int | None) -> int | None:
     """
     eBay can be eventually consistent right after a revise.
-    We retry a few times; we accept immediately if it differs from current_db_qty.
+    We check BOTH:
+      - Offer.availableQuantity
+      - InventoryItem.availability.shipToLocationAvailability.quantity
+    Prefer the InventoryItem number if available.
     """
-    delays = [0.0, 1.0, 2.0]  # seconds
+    delays = [0.0, 1.0, 2.0, 5.0]  # a little longer
     last: int | None = None
 
     for d in delays:
         if d > 0:
             await asyncio.sleep(d)
+
+        offer_qty: int | None = None
+        item_qty: int | None = None
+
         try:
-            qty = await ebay_service.get_offer_available_quantity(str(offer_id))
-            last = int(qty)
-            print("EBAY PLATFORM: offer truth availableQuantity =", last)
-            if current_db_qty is None or last != int(current_db_qty):
-                return last
+            offer_qty = int(await ebay_service.get_offer_available_quantity(str(offer_id)))
         except Exception as e:
             print("EBAY PLATFORM: get_offer_available_quantity FAILED:", repr(e))
-            # keep retrying
+
+        if sku:
+            try:
+                item_qty = int(await ebay_service.get_inventory_item_available_quantity(str(sku)))
+            except Exception as e:
+                print("EBAY PLATFORM: get_inventory_item_available_quantity FAILED:", repr(e))
+
+        # Prefer inventory item if we got it; else fall back to offer
+        truth = item_qty if item_qty is not None else offer_qty
+        if truth is None:
             continue
 
+        last = int(truth)
+        print("EBAY PLATFORM: truth offer=", offer_qty, "inventory_item=", item_qty, "=>", last)
+
+        if current_db_qty is None or last != int(current_db_qty):
+            return last
+
     return last
+
 
 
 # -------------------------
@@ -393,10 +412,12 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
             current_db_qty = int(inv.on_hand) if inv else None
 
             if pm.ebay_offer_id:
-                truth_qty = await _get_ebay_offer_truth_qty_with_retries(
-                    offer_id=str(pm.ebay_offer_id),
-                    current_db_qty=current_db_qty,
-                )
+                truth_qty = await _get_ebay_truth_qty_with_retries(
+                offer_id=str(pm.ebay_offer_id),
+                sku=pm.ebay_inventory_sku or pm.sku,
+                current_db_qty=current_db_qty,
+            )
+
 
             # 2) Fallback to SOAP available if truth couldn't be fetched
             if truth_qty is None:
