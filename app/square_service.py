@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import html
+import re
+
 import httpx
 
 from app.square_client import SquareClient
@@ -30,6 +33,28 @@ def _variation_id_from_catalog_object(upsert_res: dict[str, Any]) -> str | None:
         if vid and not str(vid).startswith("#"):
             return str(vid)
     return None
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+def html_to_plain_text(s: str) -> str:
+    if not s:
+        return ""
+    # Normalize common block tags to newlines first
+    s = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", s)
+    s = re.sub(r"(?i)</\s*p\s*>", "\n", s)
+    s = re.sub(r"(?i)<\s*p(\s+[^>]*)?>", "", s)
+
+    # Remove remaining tags
+    s = _TAG_RE.sub("", s)
+
+    # Decode HTML entities
+    s = html.unescape(s)
+
+    # Normalize whitespace / newlines
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r"\n{3,}", "\n\n", s)     # max 2 newlines
+    s = re.sub(r"[ \t]{2,}", " ", s)     # collapse spaces
+    return s.strip()
 
 
 class SquareService:
@@ -132,7 +157,7 @@ class SquareService:
 
         item_data: dict[str, Any] = {
             "name": name,
-            "description": description,
+            "description": html_to_plain_text(description),
             "variations": [
                 {
                     "type": "ITEM_VARIATION",
