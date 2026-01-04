@@ -80,6 +80,33 @@ def _extract_sku(payload: Any) -> str | None:
 
     return None
 
+def find_and_order_images(folder: str) -> list[Path]:
+    d = Path(folder)
+    if not d.exists() or not d.is_dir():
+        raise SystemExit(f"ERROR: folder does not exist or is not a directory: {folder}")
+
+    files = [p for p in d.iterdir() if p.is_file()]
+    # Require an image named "front" (case-insensitive), any allowed extension.
+    front = None
+    for p in files:
+        if p.stem.lower() == "front" and p.suffix.lower() in IMAGE_EXTS:
+            front = p
+            break
+
+    if front is None:
+        raise SystemExit(
+            "ERROR: Missing required front image. "
+            "Add an image named 'front' (e.g. front.jpg / front.png) in the folder."
+        )
+
+    # Remaining images (exclude front), stable sorted by name
+    rest = sorted(
+        [p for p in files if p != front and p.suffix.lower() in IMAGE_EXTS],
+        key=lambda x: x.name.lower(),
+    )
+
+    return [front] + rest
+
 
 def main() -> int:
 
@@ -110,10 +137,15 @@ def main() -> int:
 
     folder = Path(args.folder)
     try:
-        images = iter_images(folder)
+        images = find_and_order_images(args.folder)  # front.* first, error if missing
+    except SystemExit as e:
+        print(str(e), file=sys.stderr)
+        return 2
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
+
+    # images will always be non-empty if front is found, but keep a guard anyway
     if not images:
         print("ERROR: No images found.", file=sys.stderr)
         return 2
