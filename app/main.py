@@ -262,10 +262,33 @@ async def _get_ebay_truth_qty_with_retries(*, offer_id: str, sku: str | None, cu
     We check BOTH:
       - Offer.availableQuantity
       - InventoryItem.availability.shipToLocationAvailability.quantity
-    Prefer the InventoryItem number if available.
+
+    If they disagree, use current_db_qty to pick the one that represents a change.
     """
-    delays = [0.0, 1.0, 2.0, 5.0]  # a little longer
+    delays = [0.0, 1.0, 2.0, 5.0]
     last: int | None = None
+
+    def _choose_truth(offer_qty: int | None, item_qty: int | None, db_qty: int | None) -> int | None:
+        if offer_qty is None and item_qty is None:
+            return None
+        if offer_qty is None:
+            return item_qty
+        if item_qty is None:
+            return offer_qty
+
+        # Agree => done
+        if offer_qty == item_qty:
+            return offer_qty
+
+        # Disagree: if DB known, pick the value that indicates a change vs DB.
+        if db_qty is not None:
+            if item_qty == db_qty and offer_qty != db_qty:
+                return offer_qty
+            if offer_qty == db_qty and item_qty != db_qty:
+                return item_qty
+
+        # If still ambiguous, choose the safer lower value to reduce oversell risk.
+        return min(offer_qty, item_qty)
 
     for d in delays:
         if d > 0:
@@ -285,18 +308,19 @@ async def _get_ebay_truth_qty_with_retries(*, offer_id: str, sku: str | None, cu
             except Exception as e:
                 print("EBAY PLATFORM: get_inventory_item_available_quantity FAILED:", repr(e))
 
-        # Prefer inventory item if we got it; else fall back to offer
-        truth = item_qty if item_qty is not None else offer_qty
+        truth = _choose_truth(offer_qty, item_qty, current_db_qty)
         if truth is None:
             continue
 
         last = int(truth)
-        print("EBAY PLATFORM: truth offer=", offer_qty, "inventory_item=", item_qty, "=>", last)
+        print("EBAY PLATFORM: truth offer=", offer_qty, "inventory_item=", item_qty, "db=", current_db_qty, "=>", last)
 
+        # Return as soon as we see a value that differs from DB (a real change)
         if current_db_qty is None or last != int(current_db_qty):
             return last
 
     return last
+
 
 
 
