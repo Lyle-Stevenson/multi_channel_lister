@@ -339,6 +339,45 @@ async def _process_ebay_platform_event(raw_body: bytes) -> dict:
         updated: dict | None = None
         square_status = "skipped"
 
+        # --- NEW: Listing closed on eBay => delete in Square + delete DB rows
+        if ev.event_name == "ItemClosed":
+            # Defensive: if we don't have square_item_id, we can still delete DB.
+            square_deleted = False
+            try:
+                if pm.square_item_id:
+                    await square_service.delete_catalog_item(item_id=str(pm.square_item_id))
+                    square_deleted = True
+            except Exception as e:
+                print("EBAY PLATFORM: Square delete failed:", repr(e))
+                # Do NOT delete DB if Square delete failed; safer.
+                existing.applied_inventory = True
+                db.commit()
+                return {
+                    "event": ev.event_name,
+                    "event_id": event_id,
+                    "sku": pm.sku,
+                    "action": "delete_failed_square",
+                    "square_deleted": False,
+                }
+
+            # Delete DB rows (hard delete)
+            inv = db.get(Inventory, pm.sku)
+            if inv:
+                db.delete(inv)
+            db.delete(pm)
+
+            existing.applied_inventory = True
+            db.commit()
+
+            print("EBAY PLATFORM: deleted sku from Square+DB:", pm.sku)
+            return {
+                "event": ev.event_name,
+                "event_id": event_id,
+                "sku": pm.sku,
+                "action": "deleted",
+                "square_deleted": square_deleted,
+            }
+
         if ev.event_name == "ItemRevised":
             # 1) Prefer authoritative truth from offer (with retries)
             truth_qty: int | None = None
