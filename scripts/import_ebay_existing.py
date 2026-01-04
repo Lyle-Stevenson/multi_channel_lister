@@ -21,6 +21,7 @@ from app.ebay_client import EbayClient
 from app.ebay_trading_client import EbayTradingClient
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+EBAY_API_BASE = "https://api.ebay.com"
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -260,8 +261,6 @@ async def main() -> int:
             if (not existing_sku) or (existing_sku != sku):
                 await trading.revise_item_set_sku(item_id=str(item_id), sku=sku)
 
-            # 2) Migrate listing into Inventory API (to obtain offerId)
-            mig = await ebay_client.bulk_migrate_listing([str(item_id)])
             # Expected shape: response per listing. We just hunt offerId.
             offer_id = None
             inventory_sku = sku
