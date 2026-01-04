@@ -30,7 +30,8 @@ class MultiChannelService:
         *,
         db: Session,
         sku: str,
-        title: str,
+        square_title: str,
+        ebay_title: str,
         price_gbp: float,
         quantity: int,
         description_html: str,
@@ -49,16 +50,16 @@ class MultiChannelService:
         # 2) Product mapping row
         pm = db.scalar(select(ProductMap).where(ProductMap.sku == sku))
         if not pm:
-            pm = ProductMap(sku=sku, name=title)
+            pm = ProductMap(sku=sku, name=ebay_title)
             db.add(pm)
             db.flush()
         else:
-            pm.name = title
+            pm.name = ebay_title
 
         # 3) Push to Square first
         square_res = await self.square.upsert_item_with_images_and_inventory(
             sku=sku,
-            name=title,
+            name=square_title,
             description=description_html,
             price_gbp=price_gbp,
             quantity=inv.on_hand,
@@ -72,7 +73,7 @@ class MultiChannelService:
         # 4) Push to eBay next (use same DB qty)
         ebay_res = await self.ebay.upsert_listing_with_images_and_inventory(
             sku=sku,
-            title=title,
+            title=ebay_title,
             description=description_html,
             category_id=ebay_category_id,
             condition=ebay_condition,

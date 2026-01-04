@@ -82,6 +82,9 @@ def _extract_sku(payload: Any) -> str | None:
 
 
 def main() -> int:
+
+    EBAY_TITLE_MAX_LEN = 80
+
     p = argparse.ArgumentParser(description="List/Update on Square + eBay UK in one call (shared inventory).")
     p.add_argument("--api", default="http://localhost:8000")
     p.add_argument(
@@ -90,7 +93,8 @@ def main() -> int:
         default=None,
         help="Optional. If omitted, the API generates the next SKU automatically.",
     )
-    p.add_argument("--title", required=True)
+    p.add_argument("--square-title", required=True, help="Square item name/title")
+    p.add_argument("--ebay-title", required=True, help="eBay listing title (<= 80 chars)")
     p.add_argument("--price", required=True, type=float)
     p.add_argument("--qty", required=True, type=int)
     p.add_argument("--desc", required=True)
@@ -118,9 +122,23 @@ def main() -> int:
 
     url = args.api.rstrip("/") + "/listings/upsert"
 
-    # Build form-data. IMPORTANT: only include sku if user provided one.
+    square_title = (args.square_title or "").strip()
+    ebay_title = (args.ebay_title or "").strip()
+
+    if not square_title:
+        print("ERROR: Provide --square-title ", file=sys.stderr)
+        return 2
+    if not ebay_title:
+        print("ERROR: Provide --ebay-title ", file=sys.stderr)
+        return 2
+
+    if len(ebay_title) > EBAY_TITLE_MAX_LEN:
+        print(f"ERROR: eBay title must be <= {EBAY_TITLE_MAX_LEN} chars (got {len(ebay_title)})", file=sys.stderr)
+        return 2
+
     data: dict[str, str] = {
-        "title": args.title,
+        "square_title": square_title,
+        "ebay_title": ebay_title,
         "price_gbp": str(args.price),
         "quantity": str(args.qty),
         "description": args.desc,
