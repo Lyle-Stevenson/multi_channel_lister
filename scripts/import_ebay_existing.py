@@ -63,32 +63,7 @@ def parse_active_item_ids(trading_xml: str) -> list[str]:
 def parse_item_details(get_item_xml: str) -> dict[str, Any]:
     root = ET.fromstring(get_item_xml)
 
-    # Price extraction (fixed-price listings usually use StartPrice)
-    start_price, start_cur = _find_money(root, "StartPrice")
-    bin_price, bin_cur = _find_money(root, "BuyItNowPrice")
-    cur_price, cur_cur = _find_money(root, "CurrentPrice")  # often under SellingStatus
-
-    # Prefer BuyItNowPrice (if present), else StartPrice, else CurrentPrice.
-    price = bin_price if bin_price is not None else (start_price if start_price is not None else cur_price)
-    cur = bin_cur if bin_price is not None else (start_cur if start_price is not None else cur_cur)
-
-    # If you call Trading with UK siteid (3), you should normally get GBP back.
-    # If you ever get a different currency, you can fall back to ConvertedStartPrice/ConvertedBuyItNowPrice,
-    # which eBay notes are calculated at request time. :contentReference[oaicite:1]{index=1}
-    if price is None:
-        price_gbp = None
-    elif (cur or "").upper() == "GBP":
-        price_gbp = float(price)
-    else:
-        # Try converted GBP prices (best-effort)
-        conv_bin, conv_bin_cur = _find_money(root, "ConvertedBuyItNowPrice")
-        conv_start, conv_start_cur = _find_money(root, "ConvertedStartPrice")
-        conv = conv_bin if conv_bin is not None else conv_start
-        conv_cur = conv_bin_cur if conv_bin is not None else conv_start_cur
-        if conv is not None and (conv_cur or "").upper() == "GBP":
-            price_gbp = float(conv)
-        else:
-            price_gbp = None
+    price_gbp = _pick_price_gbp(root)
 
     def first_text(path_last: str) -> str | None:
         for elem in root.iter():
@@ -150,11 +125,8 @@ async def download_images(urls: list[str], tmp_dir: Path) -> list[Path]:
             paths.append(p)
     return paths
 
-def _find_money(root: ET.Element, tag_name: str) -> tuple[float | None, str | None]:
-    """
-    Find first <tag_name currencyID="GBP">12.34</tag_name> anywhere and return (value, currencyID).
-    Namespace-agnostic.
-    """
+def _find_all_money(root: ET.Element, tag_name: str) -> list[tuple[float, str | None]]:
+    out: list[tuple[float, str | None]] = []
     for el in root.iter():
         if _ns_strip(el.tag) == tag_name:
             txt = (el.text or "").strip()
@@ -165,8 +137,25 @@ def _find_money(root: ET.Element, tag_name: str) -> tuple[float | None, str | No
             except Exception:
                 continue
             cur = el.attrib.get("currencyID") or el.attrib.get("currencyId")
-            return val, cur
-    return None, None
+            out.append((val, cur))
+    return out
+
+def _pick_price_gbp(root: ET.Element) -> float | None:
+    """
+    Prefer a GBP price > 0. If multiple candidates exist, pick the largest GBP value.
+    Priority order: BuyItNowPrice, StartPrice, CurrentPrice, ConvertedBuyItNowPrice, ConvertedStartPrice.
+    """
+    candidates: list[float] = []
+
+    for tag in ("BuyItNowPrice", "StartPrice", "CurrentPrice", "ConvertedBuyItNowPrice", "ConvertedStartPrice"):
+        for val, cur in _find_all_money(root, tag):
+            if (cur or "").upper() == "GBP" and val > 0:
+                candidates.append(val)
+
+    if candidates:
+        return float(max(candidates))  # robust against “0.00” placeholders
+
+    return None
 
 async def _offer_id_from_sku(ebay_client: EbayClient, sku: str) -> str | None:
     token = await ebay_client.get_access_token()
@@ -302,6 +291,8 @@ async def main() -> int:
                 if price_gbp is None:
                     print(f"SKIP {item_id}: could not determine GBP price from GetItem")
                     continue
+
+                print(f"PRICE item={item_id} sku={sku} price_gbp={price_gbp}")
 
                 square_res = await square_service.upsert_item_with_images_and_inventory(
                     sku=sku,
