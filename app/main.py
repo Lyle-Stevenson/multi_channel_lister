@@ -43,7 +43,7 @@ app = FastAPI(title="Multi-Channel Lister (Square + eBay UK)")
 
 ECHO_WINDOW = timedelta(minutes=5)
 STALE_TOLERANCE = timedelta(seconds=3)  # allow tiny clock differences
-
+EBAY_TITLE_MAX_LEN = 80
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -155,10 +155,12 @@ def health():
 
 @app.post("/listings/upsert")
 async def listings_upsert(
-    title: Annotated[str, Form()],
+
     price_gbp: Annotated[float, Form()],
     quantity: Annotated[int, Form()],
     description: Annotated[str, Form()],
+    square_title: Annotated[str | None, Form()] = None,
+    ebay_title: Annotated[str | None, Form()] = None,
     sku: Annotated[str | None, Form()] = None,
     square_reporting_category: Annotated[str | None, Form()] = None,
     ebay_category_id: Annotated[str, Form()] = "261055",
@@ -168,6 +170,22 @@ async def listings_upsert(
 ):
     if not images:
         raise HTTPException(status_code=400, detail="At least 1 image is required")
+    
+    # Resolve titles with a sensible fallback order
+    square_title_final = (square_title or "").strip()
+    ebay_title_final = (ebay_title or "").strip()
+
+    if not square_title_final:
+        raise HTTPException(status_code=400, detail="square_title is required")
+    if not ebay_title_final:
+        raise HTTPException(status_code=400, detail="ebay_title is required")
+
+    # IMPORTANT: validate eBay title BEFORE any Square/eBay API calls
+    if len(ebay_title_final) > EBAY_TITLE_MAX_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"eBay title must be {EBAY_TITLE_MAX_LEN} characters or less (got {len(ebay_title_final)})",
+        )
 
     ebay_condition_enum = _normalize_condition(ebay_condition)
 
@@ -198,7 +216,8 @@ async def listings_upsert(
                 result = await multi_service.upsert_both(
                     db=db,
                     sku=final_sku,
-                    title=title.strip(),
+                    square_title=square_title_final,
+                    ebay_title=ebay_title_final,
                     price_gbp=float(price_gbp),
                     quantity=int(quantity),
                     description_html=description,

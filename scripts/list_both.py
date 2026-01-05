@@ -80,8 +80,38 @@ def _extract_sku(payload: Any) -> str | None:
 
     return None
 
+def find_and_order_images(folder: str) -> list[Path]:
+    d = Path(folder)
+    if not d.exists() or not d.is_dir():
+        raise SystemExit(f"ERROR: folder does not exist or is not a directory: {folder}")
+
+    files = [p for p in d.iterdir() if p.is_file()]
+    # Require an image named "front" (case-insensitive), any allowed extension.
+    front = None
+    for p in files:
+        if p.stem.lower() == "front" and p.suffix.lower() in IMAGE_EXTS:
+            front = p
+            break
+
+    if front is None:
+        raise SystemExit(
+            "ERROR: Missing required front image. "
+            "Add an image named 'front' (e.g. front.jpg / front.png) in the folder."
+        )
+
+    # Remaining images (exclude front), stable sorted by name
+    rest = sorted(
+        [p for p in files if p != front and p.suffix.lower() in IMAGE_EXTS],
+        key=lambda x: x.name.lower(),
+    )
+
+    return [front] + rest
+
 
 def main() -> int:
+
+    EBAY_TITLE_MAX_LEN = 80
+
     p = argparse.ArgumentParser(description="List/Update on Square + eBay UK in one call (shared inventory).")
     p.add_argument("--api", default="http://localhost:8000")
     p.add_argument(
@@ -90,7 +120,8 @@ def main() -> int:
         default=None,
         help="Optional. If omitted, the API generates the next SKU automatically.",
     )
-    p.add_argument("--title", required=True)
+    p.add_argument("--square-title", required=True, help="Square item name/title")
+    p.add_argument("--ebay-title", required=True, help="eBay listing title (<= 80 chars)")
     p.add_argument("--price", required=True, type=float)
     p.add_argument("--qty", required=True, type=int)
     p.add_argument("--desc", required=True)
@@ -106,10 +137,15 @@ def main() -> int:
 
     folder = Path(args.folder)
     try:
-        images = iter_images(folder)
+        images = find_and_order_images(args.folder)  # front.* first, error if missing
+    except SystemExit as e:
+        print(str(e), file=sys.stderr)
+        return 2
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
+
+    # images will always be non-empty if front is found, but keep a guard anyway
     if not images:
         print("ERROR: No images found.", file=sys.stderr)
         return 2
@@ -118,9 +154,23 @@ def main() -> int:
 
     url = args.api.rstrip("/") + "/listings/upsert"
 
-    # Build form-data. IMPORTANT: only include sku if user provided one.
+    square_title = (args.square_title or "").strip()
+    ebay_title = (args.ebay_title or "").strip()
+
+    if not square_title:
+        print("ERROR: Provide --square-title ", file=sys.stderr)
+        return 2
+    if not ebay_title:
+        print("ERROR: Provide --ebay-title ", file=sys.stderr)
+        return 2
+
+    if len(ebay_title) > EBAY_TITLE_MAX_LEN:
+        print(f"ERROR: eBay title must be <= {EBAY_TITLE_MAX_LEN} chars (got {len(ebay_title)})", file=sys.stderr)
+        return 2
+
     data: dict[str, str] = {
-        "title": args.title,
+        "square_title": square_title,
+        "ebay_title": ebay_title,
         "price_gbp": str(args.price),
         "quantity": str(args.qty),
         "description": args.desc,
