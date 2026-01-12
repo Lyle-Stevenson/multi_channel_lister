@@ -15,12 +15,16 @@ from app.ebay_client import EbayClient
 EBAY_API_BASE = "https://api.ebay.com"
 
 
+async def _token(ebay: EbayClient) -> str:
+    # Your EbayClient exposes _get_user_access_token(), not get_access_token()
+    return await ebay._get_user_access_token()
+
+
 async def _get_offers_for_sku(ebay: EbayClient, *, sku: str, marketplace_id: str) -> list[dict[str, Any]]:
     """
     Calls: GET /sell/inventory/v1/offer?sku=...&marketplace_id=...&format=FIXED_PRICE
-    Returns list of offer dicts (best-effort).
+    Returns list of offers.
     """
-    token = await ebay.get_access_token()
     url = f"{EBAY_API_BASE}/sell/inventory/v1/offer"
     params = {
         "sku": sku,
@@ -28,11 +32,13 @@ async def _get_offers_for_sku(ebay: EbayClient, *, sku: str, marketplace_id: str
         "format": "FIXED_PRICE",
         "limit": "50",
     }
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    headers = {"Authorization": f"Bearer {await _token(ebay)}", "Accept": "application/json"}
 
     async with httpx.AsyncClient(timeout=60) as client:
         r = await client.get(url, headers=headers, params=params)
         if r.status_code >= 400:
+            # Helpful debug
+            print(f"[ERR] offer lookup failed sku={sku} HTTP {r.status_code}: {r.text}")
             return []
         data = r.json()
         offers = data.get("offers") or []
@@ -41,13 +47,12 @@ async def _get_offers_for_sku(ebay: EbayClient, *, sku: str, marketplace_id: str
 
 def _pick_best_offer(offers: list[dict[str, Any]]) -> dict[str, Any] | None:
     """
-    Prefer published offers that have a listing container (means listing exists).
-    Fallback to first offer.
+    Prefer offers that already have listing info (published).
     """
     if not offers:
         return None
     for o in offers:
-        if isinstance(o, dict) and o.get("listing") and o.get("offerId"):
+        if isinstance(o, dict) and o.get("offerId") and o.get("listing"):
             return o
     for o in offers:
         if isinstance(o, dict) and o.get("offerId"):
@@ -55,12 +60,18 @@ def _pick_best_offer(offers: list[dict[str, Any]]) -> dict[str, Any] | None:
     return offers[0] if isinstance(offers[0], dict) else None
 
 
+def _extract_listing_id(offer: dict[str, Any]) -> str:
+    listing = offer.get("listing") or {}
+    lid = listing.get("listingId") or listing.get("listing_id") or ""
+    return str(lid).strip() if lid else ""
+
+
 async def main() -> int:
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(description="Fix product_map ebay ids after relist, using SKU -> Offer -> listingId.")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--max", type=int, default=0, help="0 = no limit")
-    p.add_argument("--marketplace", default=None, help="Defaults to EBAY_GB (or your .env marketplace id)")
-    p.add_argument("--sleep", type=float, default=0.15, help="Seconds to sleep between SKUs (gentle rate limiting)")
+    p.add_argument("--marketplace", default=None, help="Defaults to settings.ebay_marketplace_id (usually EBAY_GB)")
+    p.add_argument("--sleep", type=float, default=0.15, help="Seconds to sleep between SKUs")
     args = p.parse_args()
 
     settings.validate_required()
@@ -73,13 +84,14 @@ async def main() -> int:
         refresh_token=settings.ebay_refresh_token,
     )
 
+    # Read rows once
     with SessionLocal() as db:
         q = db.query(ProductMap).order_by(ProductMap.updated_at.desc())
         if args.max and args.max > 0:
             q = q.limit(int(args.max))
         rows = q.all()
 
-    print(f"Reconciling {len(rows)} product_map rows (marketplace={marketplace_id})")
+    print(f"Reconciling {len(rows)} product_map rows (marketplace={marketplace_id}) dry_run={args.dry_run}")
 
     updated = 0
     skipped = 0
@@ -94,44 +106,42 @@ async def main() -> int:
         offers = await _get_offers_for_sku(ebay, sku=sku, marketplace_id=marketplace_id)
         best = _pick_best_offer(offers)
         if not best:
-            print(f"[MISS] sku={sku}: no offer found via Inventory API (maybe SKU not set on relisted item)")
+            print(f"[MISS] sku={sku}: no offer found by SKU (likely SKU missing on eBay relist)")
             missing += 1
             await asyncio.sleep(args.sleep)
             continue
 
         offer_id = str(best.get("offerId") or "").strip()
-        # Your EbayClient.get_offer returns full offer; listing.listingId is present for published offers.
-        offer = await ebay.get_offer(offer_id)
-        listing_id = (
-            str(((offer.get("listing") or {}).get("listingId")) or "").strip()
-            if isinstance(offer, dict)
-            else ""
-        )
+        if not offer_id:
+            print(f"[MISS] sku={sku}: offer record missing offerId??")
+            missing += 1
+            await asyncio.sleep(args.sleep)
+            continue
 
-        if not listing_id:
-            # Could be unpublished or ended; still update offer_id if changed.
-            listing_id = ""
+        # Fetch full offer to get listingId reliably
+        offer = await ebay.get_offer(offer_id)
+        listing_id = _extract_listing_id(offer)
 
         changes = []
         if offer_id and (pm.ebay_offer_id or "") != offer_id:
-            changes.append(f"offer_id {pm.ebay_offer_id} -> {offer_id}")
+            changes.append(f"offer_id {pm.ebay_offer_id or '(none)'} -> {offer_id}")
         if listing_id and (pm.ebay_listing_id or "") != listing_id:
-            changes.append(f"listing_id {pm.ebay_listing_id} -> {listing_id}")
+            changes.append(f"listing_id {pm.ebay_listing_id or '(none)'} -> {listing_id}")
 
         if not changes:
-            print(f"[OK]   sku={sku}: no change (offer_id={pm.ebay_offer_id}, listing_id={pm.ebay_listing_id})")
+            print(f"[OK]  sku={sku}: no change (offer_id={pm.ebay_offer_id}, listing_id={pm.ebay_listing_id})")
             skipped += 1
             await asyncio.sleep(args.sleep)
             continue
 
-        print(f"[UPD]  sku={sku}: " + "; ".join(changes))
+        print(f"[UPD] sku={sku}: " + "; ".join(changes))
 
         if not args.dry_run:
             with SessionLocal() as db:
                 row = db.get(ProductMap, sku)
                 if row:
-                    if offer_id:
-                        row.ebay_offer_id = offer_id
+                    row.ebay_offer_id = offer_id
+                    # Only overwrite listing_id if we actually got one
                     if listing_id:
                         row.ebay_listing_id = listing_id
                     db.commit()
