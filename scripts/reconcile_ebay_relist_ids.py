@@ -105,6 +105,22 @@ def listing_id_from_offer(offer: dict[str, Any]) -> str | None:
     lid = listing.get("listingId") or listing.get("listing_id")
     return str(lid) if lid else None
 
+async def _bulk_migrate_listing(ebay: EbayClient, listing_id: str) -> dict[str, Any]:
+    token = await ebay._get_user_access_token()
+    url = "https://api.ebay.com/sell/inventory/v1/bulk_migrate_listing"
+    payload = {"requests": [{"listingId": str(listing_id)}]}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Content-Language": "en-GB",
+        "Accept": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=headers, json=payload)
+        if r.status_code >= 400:
+            raise RuntimeError(f"bulk_migrate_listing failed HTTP {r.status_code}: {r.text}")
+        return r.json()
+
 
 async def migrate_listing_get_offer_id(ebay: EbayClient, *, listing_id: str, sku: str, marketplace_id: str) -> str | None:
     """
@@ -113,7 +129,7 @@ async def migrate_listing_get_offer_id(ebay: EbayClient, *, listing_id: str, sku
     """
     # bulk_migrate_listing should exist in your EbayClient
     try:
-        mig = await ebay.bulk_migrate_listing([str(listing_id)])
+        mig = await _bulk_migrate_listing(ebay, str(listing_id))
         for resp in (mig.get("responses") or []):
             if str(resp.get("listingId")) != str(listing_id):
                 continue
