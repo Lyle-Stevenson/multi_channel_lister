@@ -10,6 +10,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import ProductMap
 from app.ebay_client import EbayClient
+import xml.etree.ElementTree as ET
 
 EBAY_API_BASE = "https://api.ebay.com"
 
@@ -17,6 +18,18 @@ EBAY_API_BASE = "https://api.ebay.com"
 async def _token(ebay: EbayClient) -> str:
     return await ebay._get_user_access_token()
 
+
+
+def _ns_strip(tag: str) -> str:
+    return tag.split("}", 1)[-1] if "}" in tag else tag
+
+def _first_text(root: ET.Element, tag_last: str) -> str | None:
+    for el in root.iter():
+        if _ns_strip(el.tag) == tag_last:
+            t = (el.text or "").strip()
+            if t:
+                return t
+    return None
 
 async def _get_offers_for_sku(ebay: EbayClient, *, sku: str, marketplace_id: str) -> list[dict[str, Any]]:
     url = f"{EBAY_API_BASE}/sell/inventory/v1/offer"
@@ -46,28 +59,44 @@ def _listing_id_from_offer_payload(offer: dict[str, Any]) -> str:
 
 async def _is_listing_active(ebay: EbayClient, *, listing_id: str) -> bool:
     """
-    Uses Browse API getItem:
-      GET /buy/browse/v1/item/{item_id}
-    If it returns 200 -> listing is live/visible.
-    If 404/4xx -> likely ended/not visible.
+    Trading API GetItem (via IAF token) to check ListingStatus == Active.
+    Works without needing Browse API scopes.
     """
     if not listing_id:
         return False
 
-    url = f"{EBAY_API_BASE}/buy/browse/v1/item/{listing_id}"
+    url = "https://api.ebay.com/ws/api.dll"
     headers = {
-        "Authorization": f"Bearer {await _token(ebay)}",
-        "Accept": "application/json",
-        # marketplace is important for browse; use EBAY_GB by default
-        "X-EBAY-C-MARKETPLACE-ID": (settings.ebay_marketplace_id or "EBAY_GB"),
+        "Content-Type": "text/xml",
+        "X-EBAY-API-CALL-NAME": "GetItem",
+        "X-EBAY-API-SITEID": "3",  # UK
+        "X-EBAY-API-COMPATIBILITY-LEVEL": "1331",
+        "X-EBAY-API-IAF-TOKEN": await ebay._get_user_access_token(),
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(url, headers=headers)
-        if r.status_code == 200:
-            return True
-        # Ended listings commonly 404 here, but keep it broad
+    body = f"""<?xml version="1.0" encoding="utf-8"?>
+<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <ItemID>{listing_id}</ItemID>
+  <DetailLevel>ReturnSummary</DetailLevel>
+</GetItemRequest>
+"""
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(url, headers=headers, content=body.encode("utf-8"))
+
+    if r.status_code >= 400:
+        # If Trading errors, treat as not active
+        print(f"[WARN] Trading GetItem HTTP {r.status_code} listingId={listing_id}: {r.text[:200]}")
         return False
+
+    try:
+        root = ET.fromstring(r.text)
+    except Exception as e:
+        print(f"[WARN] Trading GetItem XML parse failed listingId={listing_id}: {e!r}")
+        return False
+
+    status = _first_text(root, "ListingStatus")  # Active, Completed, Ended, etc.
+    return (status or "").strip().lower() == "active"
 
 
 async def _choose_active_offer_id(
