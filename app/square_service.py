@@ -157,7 +157,6 @@ class SquareService:
         variation_data: dict[str, Any] = {
             "name": "Regular",
             "sku": sku,
-            "pricing_type": "variable_pricing",
         }
 
         item_data: dict[str, Any] = {
