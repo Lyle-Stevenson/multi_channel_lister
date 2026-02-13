@@ -210,6 +210,37 @@ class EbayClient:
                 raise RuntimeError(f"eBay get inventory item failed: HTTP {r.status_code}: {r.text}")
             return r.json()
 
+    async def delete_offer(self, offer_id: str) -> None:
+        """
+        Delete an eBay offer. The listing must be ended (withdrawn or sold out) before deletion.
+        """
+        url = f"{EBAY_API_BASE}/sell/inventory/v1/offer/{offer_id}"
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.delete(url, headers=await self._headers())
+            if r.status_code >= 400 and r.status_code != 404:
+                raise RuntimeError(f"eBay delete offer failed: HTTP {r.status_code}: {r.text}")
+
+    async def delete_inventory_item(self, sku: str) -> None:
+        """
+        Delete an eBay inventory item by SKU.
+        """
+        url = f"{EBAY_API_BASE}/sell/inventory/v1/inventory_item/{sku}"
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.delete(url, headers=await self._headers())
+            if r.status_code >= 400 and r.status_code != 404:
+                raise RuntimeError(f"eBay delete inventory item failed: HTTP {r.status_code}: {r.text}")
+
+    async def withdraw_offer(self, offer_id: str) -> None:
+        """
+        Withdraw (end) an eBay listing. Required before deleting the offer.
+        """
+        url = f"{EBAY_API_BASE}/sell/inventory/v1/offer/{offer_id}/withdraw"
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(url, headers=await self._headers(content_type="application/json"))
+            # 200 = success, 409 = already withdrawn/ended, 404 = offer doesn't exist
+            if r.status_code >= 400 and r.status_code not in (404, 409):
+                raise RuntimeError(f"eBay withdraw offer failed: HTTP {r.status_code}: {r.text}")
+
     async def create_or_replace_offer(
         self,
         *,

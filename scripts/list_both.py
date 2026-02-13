@@ -120,8 +120,7 @@ def main() -> int:
         default=None,
         help="Optional. If omitted, the API generates the next SKU automatically.",
     )
-    p.add_argument("--square-title", required=True, help="Square item name/title")
-    p.add_argument("--ebay-title", required=True, help="eBay listing title (<= 80 chars)")
+    p.add_argument("--title", required=True, help="Product title for both Square and eBay (<= 80 chars)")
     p.add_argument("--price", required=True, type=float)
     p.add_argument("--qty", required=True, type=int)
     p.add_argument("--desc", required=True)
@@ -154,23 +153,19 @@ def main() -> int:
 
     url = args.api.rstrip("/") + "/listings/upsert"
 
-    square_title = (args.square_title or "").strip()
-    ebay_title = (args.ebay_title or "").strip()
+    title = (args.title or "").strip()
 
-    if not square_title:
-        print("ERROR: Provide --square-title ", file=sys.stderr)
-        return 2
-    if not ebay_title:
-        print("ERROR: Provide --ebay-title ", file=sys.stderr)
+    if not title:
+        print("ERROR: Provide --title", file=sys.stderr)
         return 2
 
-    if len(ebay_title) > EBAY_TITLE_MAX_LEN:
-        print(f"ERROR: eBay title must be <= {EBAY_TITLE_MAX_LEN} chars (got {len(ebay_title)})", file=sys.stderr)
+    if len(title) > EBAY_TITLE_MAX_LEN:
+        print(f"ERROR: Title must be <= {EBAY_TITLE_MAX_LEN} chars (got {len(title)})", file=sys.stderr)
         return 2
 
     data: dict[str, str] = {
-        "square_title": square_title,
-        "ebay_title": ebay_title,
+        "square_title": title,
+        "ebay_title": title,
         "price_gbp": str(args.price),
         "quantity": str(args.qty),
         "description": args.desc,

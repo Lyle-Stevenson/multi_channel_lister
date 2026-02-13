@@ -28,6 +28,7 @@ from app.square_webhook import (
     verify_square_signature,
     extract_payment_order_id_and_status,
     extract_inventory_change,
+    extract_catalog_deleted_object_ids,
     apply_square_order_and_sync_ebay,
     apply_square_inventory_change_and_sync_ebay,
 )
@@ -275,6 +276,73 @@ async def _process_square_inventory(event_id: str, event_type: str, changes: lis
         return await apply_square_inventory_change_and_sync_ebay(db=db, event_id=event_id, event_type=event_type, changes=changes)
 
 
+async def _process_square_catalog_deleted(event_id: str, event_type: str, deleted_ids: list[str]) -> dict:
+    """
+    Handle Square catalog deletion: delete eBay listing + clean up DB.
+    deleted_ids may contain ITEM IDs or VARIATION IDs.
+    """
+    with SessionLocal() as db:
+        # Check idempotency
+        event = db.get(WebhookEvent, event_id)
+        if event and event.applied_inventory:
+            print(f"SQUARE CATALOG DELETE: already processed event {event_id}")
+            return {"event_id": event_id, "action": "duplicate_ignored"}
+
+        if not event:
+            event = WebhookEvent(event_id=event_id, provider="square", event_type=event_type, order_id=None)
+            db.add(event)
+            db.commit()
+
+        deleted_skus: list[str] = []
+        ebay_results: list[dict] = []
+
+        for oid in deleted_ids:
+            # Try to find by square_item_id or square_variation_id
+            pm = db.scalar(
+                select(ProductMap).where(
+                    (ProductMap.square_item_id == oid) | (ProductMap.square_variation_id == oid)
+                )
+            )
+            if not pm:
+                continue
+
+            sku = pm.sku
+            print(f"SQUARE CATALOG DELETE: found mapping for deleted object {oid}, sku={sku}")
+
+            # Delete from eBay
+            ebay_del_result = {"sku": sku, "offer_deleted": False, "inventory_deleted": False}
+            try:
+                ebay_del_result = await ebay_service.delete_listing(
+                    offer_id=pm.ebay_offer_id,
+                    sku=pm.ebay_inventory_sku or pm.sku,
+                )
+                ebay_del_result["sku"] = sku
+            except Exception as e:
+                print(f"SQUARE CATALOG DELETE: eBay delete failed for sku={sku}: {repr(e)}")
+                ebay_del_result["error"] = repr(e)
+
+            ebay_results.append(ebay_del_result)
+
+            # Delete from DB
+            inv = db.get(Inventory, sku)
+            if inv:
+                db.delete(inv)
+            db.delete(pm)
+            deleted_skus.append(sku)
+
+        event.applied_inventory = True
+        event.ebay_synced = True
+        db.commit()
+
+        print(f"SQUARE CATALOG DELETE: processed {len(deleted_skus)} SKUs: {deleted_skus}")
+        return {
+            "event_id": event_id,
+            "action": "deleted",
+            "deleted_skus": deleted_skus,
+            "ebay_results": ebay_results,
+        }
+
+
 async def _get_ebay_truth_qty_with_retries(*, offer_id: str, sku: str | None, current_db_qty: int | None) -> int | None:
     """
     eBay can be eventually consistent right after a revise.
@@ -348,6 +416,7 @@ async def _get_ebay_truth_qty_with_retries(*, offer_id: str, sku: str | None, cu
 # -------------------------
 async def _process_ebay_platform_event(raw_body: bytes) -> dict:
     print("EBAY PLATFORM: raw_len =", len(raw_body))
+    print("EBAY PLATFORM: raw_body =", raw_body.decode("utf-8", errors="replace")[:2000])
 
     try:
         ev = parse_ebay_platform_notification(raw_body)
@@ -572,6 +641,13 @@ async def square_webhook(
     changes = extract_inventory_change(payload)
     if changes:
         background_tasks.add_task(_process_square_inventory, str(event_id), str(event_type), changes)
+        return {"ok": True}
+
+    # Handle catalog deletions
+    deleted_ids = extract_catalog_deleted_object_ids(payload)
+    if deleted_ids:
+        print(f"square webhook catalog.version.updated: deleted_ids={deleted_ids}")
+        background_tasks.add_task(_process_square_catalog_deleted, str(event_id), str(event_type), deleted_ids)
         return {"ok": True}
 
     return {"ok": True}

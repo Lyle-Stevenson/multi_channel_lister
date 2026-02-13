@@ -124,6 +124,31 @@ def extract_inventory_change(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def extract_catalog_deleted_object_ids(payload: dict[str, Any]) -> list[str]:
+    """
+    Extract deleted catalog object IDs from Square catalog.version.updated webhook.
+
+    Square sends catalog.version.updated with data.object containing:
+      - updated_at: timestamp
+      - deleted_object_ids: list of deleted object IDs (items or variations)
+
+    Returns list of deleted object IDs (could be ITEM or ITEM_VARIATION IDs).
+    """
+    event_type = payload.get("type") or payload.get("event_type") or ""
+    if event_type != "catalog.version.updated":
+        return []
+
+    obj = _safe_get(payload, "data", "object") or {}
+    if not isinstance(obj, dict):
+        return []
+
+    deleted_ids = obj.get("deleted_object_ids") or obj.get("deletedObjectIds") or []
+    if not isinstance(deleted_ids, list):
+        return []
+
+    return [str(oid) for oid in deleted_ids if oid]
+
+
 async def _square_retrieve_order(order_id: str) -> dict[str, Any]:
     url = f"{SQUARE_BASE}/orders/{order_id}"
     headers = {

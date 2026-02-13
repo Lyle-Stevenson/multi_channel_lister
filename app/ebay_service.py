@@ -110,3 +110,31 @@ class EbayService:
         data = await self.client.get_inventory_item(str(sku))
         avail = (data.get("availability") or {}).get("shipToLocationAvailability") or {}
         return _to_int(avail.get("quantity"), default=0)
+
+    async def delete_listing(self, *, offer_id: str | None, sku: str | None) -> dict[str, bool]:
+        """
+        Fully delete an eBay listing: withdraw the offer (end listing), delete offer, delete inventory item.
+        """
+        offer_deleted = False
+        inventory_deleted = False
+
+        if offer_id:
+            try:
+                await self.client.withdraw_offer(str(offer_id))
+            except Exception as e:
+                print(f"EBAY SERVICE: withdraw_offer failed (continuing): {repr(e)}")
+
+            try:
+                await self.client.delete_offer(str(offer_id))
+                offer_deleted = True
+            except Exception as e:
+                print(f"EBAY SERVICE: delete_offer failed: {repr(e)}")
+
+        if sku:
+            try:
+                await self.client.delete_inventory_item(str(sku))
+                inventory_deleted = True
+            except Exception as e:
+                print(f"EBAY SERVICE: delete_inventory_item failed: {repr(e)}")
+
+        return {"offer_deleted": offer_deleted, "inventory_deleted": inventory_deleted}
