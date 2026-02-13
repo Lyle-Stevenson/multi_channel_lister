@@ -141,7 +141,6 @@ class SquareService:
         sku: str,
         name: str,
         description: str,
-        price_gbp: float,
         quantity: int,
         image_paths: list[Path],
         reporting_category: str | None = None,
@@ -155,6 +154,12 @@ class SquareService:
         if reporting_category and reporting_category.strip():
             cat_id = await self.client.create_or_get_category_id(category_name=reporting_category.strip())
 
+        variation_data: dict[str, Any] = {
+            "name": "Regular",
+            "sku": sku,
+            "pricing_type": "variable_pricing",
+        }
+
         item_data: dict[str, Any] = {
             "name": name,
             "description": html_to_plain_text(description),
@@ -162,12 +167,7 @@ class SquareService:
                 {
                     "type": "ITEM_VARIATION",
                     "id": client_var_id,
-                    "item_variation_data": {
-                        "name": "Regular",
-                        "sku": sku,
-                        "pricing_type": "FIXED_PRICING",
-                        "price_money": {"amount": int(round(float(price_gbp) * 100)), "currency": "GBP"},
-                    },
+                    "item_variation_data": variation_data,
                 }
             ],
         }

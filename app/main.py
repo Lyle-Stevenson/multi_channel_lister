@@ -157,8 +157,8 @@ def health():
 @app.post("/listings/upsert")
 async def listings_upsert(
 
-    price_gbp: Annotated[float, Form()],
     quantity: Annotated[int, Form()],
+    price_gbp: Annotated[float, Form()],
     description: Annotated[str, Form()],
     square_title: Annotated[str | None, Form()] = None,
     ebay_title: Annotated[str | None, Form()] = None,

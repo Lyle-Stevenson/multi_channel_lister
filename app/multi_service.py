@@ -61,7 +61,6 @@ class MultiChannelService:
             sku=sku,
             name=square_title,
             description=description_html,
-            price_gbp=price_gbp,
             quantity=inv.on_hand,
             image_paths=image_paths,
             reporting_category=square_reporting_category,
