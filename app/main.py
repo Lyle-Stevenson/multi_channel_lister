@@ -628,6 +628,7 @@ async def square_webhook(
     event_type = payload.get("type") or payload.get("event_type") or ""
 
     print("square webhook type:", event_type, "event_id:", event_id)
+    print("square webhook payload:", raw_body.decode("utf-8")[:2000])
     print("inventory changes:", extract_inventory_change(payload))
 
     if not event_id:
@@ -645,8 +646,10 @@ async def square_webhook(
 
     # Handle catalog deletions
     deleted_ids = extract_catalog_deleted_object_ids(payload)
+    print("square webhook catalog.version.updated: deleted_ids =", deleted_ids)
     if deleted_ids:
-        print(f"square webhook catalog.version.updated: deleted_ids={deleted_ids}")
+        print(f"square webhook catalog deletion check: event_type={event_type}, deleted_ids={deleted_ids}")
+        print(f"square webhook data.object keys: {list((payload.get('data', {}).get('object', {} or [])).keys())}")
         background_tasks.add_task(_process_square_catalog_deleted, str(event_id), str(event_type), deleted_ids)
         return {"ok": True}
 
